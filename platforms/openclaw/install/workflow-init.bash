@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# 安装 workflow-init 到 OpenClaw workspace skills
+# 从 skills/workflow-init/SKILL.md 读取，添加 OpenClaw frontmatter 后写入
+
+set -euo pipefail
+
+SKILLS_DIR="$(cd "$(dirname "$0")/../../../skills" && pwd)"
+SKILL_FILE="${SKILLS_DIR}/workflow-init/SKILL.md"
+DST_DIR="${HOME}/.openclaw/skills/workflow-init"
+
+[ -f "$SKILL_FILE" ] || { echo "    ❌ 找不到 SKILL: $SKILL_FILE"; exit 1; }
+
+# 提取原 frontmatter 字段
+name=$(awk '/^---$/{n++; next} n==1 && /^name:/{sub(/^name: */,""); print; exit}' "$SKILL_FILE")
+desc=$(awk '/^---$/{n++; next} n==1 && /^description:/{sub(/^description: *"?/,""); sub(/"?$/,""); print; exit}' "$SKILL_FILE")
+body=$(awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$SKILL_FILE")
+
+mkdir -p "$DST_DIR"
+
+cat > "$DST_DIR/SKILL.md" << SKILLEOF
+---
+name: $name
+description: $desc
+user-invocable: true
+---
+
+$body
+SKILLEOF
+
+echo "    ✅ /$name"
