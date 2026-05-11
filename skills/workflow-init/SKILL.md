@@ -45,14 +45,17 @@ description: 初始化 AI 辅助开发工作流。通过一轮交互式问答收
 ```
 {用户指定位置}/workflow-{项目名称}/
 ├── workflow.yaml          ← 配置文件（后续阶段的唯一入口）
+├── AGENT.md         ← 开发者画像（按需修改后执行 dev-profile 加载）
 └── output/                ← 各阶段输出目录
 ```
+
+`workflow.yaml` 由后续步骤生成。`AGENT.md` 从 `skills/workflow-init/AGENT.md` 复制默认版本，用户可按需修改。
 
 ---
 
 ## 生成 workflow.yaml
 
-目录创建完成后，在根目录生成 `workflow.yaml`。所有路径均为相对路径（相对于 workflow-xxx 根目录）。PRD 路径为目录时，展开为具体文件列表。
+目录创建完成后，在根目录生成 `workflow.yaml`。所有路径均使用绝对路径。PRD 路径为目录时，展开为具体文件列表。
 
 ```yaml
 # workflow.yaml
@@ -72,6 +75,9 @@ prd:
 
 output:
   base_dir: output
+
+agent:
+  profile: AGENT.md
 ```
 
 ---
@@ -91,6 +97,7 @@ PRD 文档：X 份
 
 📁 已创建目录结构
 📄 已生成 workflow.yaml
+📄 已生成 AGENT.md（基于默认模板，按需修改后执行 dev-profile 加载）
 
-下一步：进入工作流目录，执行 prd-analyzer 开始需求分析
+下一步：按需执行 dev-profile 注入开发者画像，然后执行 prd-analyzer 开始需求分析
 ```

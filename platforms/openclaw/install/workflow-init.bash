@@ -6,6 +6,7 @@ set -euo pipefail
 
 SKILLS_DIR="$(cd "$(dirname "$0")/../../../skills" && pwd)"
 SKILL_FILE="${SKILLS_DIR}/workflow-init/SKILL.md"
+AGENT_FILE="${SKILLS_DIR}/workflow-init/AGENT.md"
 DST_DIR="${HOME}/.openclaw/skills/workflow-init"
 
 [ -f "$SKILL_FILE" ] || { echo "    ❌ 找不到 SKILL: $SKILL_FILE"; exit 1; }
@@ -26,5 +27,7 @@ user-invocable: true
 
 $body
 SKILLEOF
+
+cp "$AGENT_FILE" "$DST_DIR/AGENT.md"
 
 echo "    ✅ /$name"

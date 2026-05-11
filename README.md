@@ -45,6 +45,8 @@ AIWorkFlow/
 │   └── openclaw/
 ├── skills/                       # Skill 定义
 │   ├── workflow-init/SKILL.md
+│   │   └── AGENT.md                    ← 默认 Agent 角色配置
+│   ├── dev-profile/SKILL.md
 │   ├── prd-analyzer/SKILL.md
 │   ├── task-decomposer/SKILL.md
 │   ├── tech-designer/SKILL.md
@@ -60,6 +62,7 @@ AIWorkFlow/
 ```
 workflow-{项目名称}/
 ├── workflow.yaml          # 配置文件（各阶段的唯一配置入口）
+├── AGENT.md               # Agent 角色与项目约束（按需修改后执行 dev-profile 加载）
 └── output/
     ├── requirements.md    # 需求分析
     ├── tasks.md           # 任务分解
@@ -76,7 +79,8 @@ workflow-{项目名称}/
 
 | 阶段 | 输入 | 输出 | 核心职责 |
 |------|------|------|----------|
-| `workflow-init` | 用户交互 | `workflow.yaml` | 收集项目信息，初始化工作流目录 |
+| `workflow-init` | 用户交互 | `workflow.yaml` + `AGENT.md` | 收集项目信息，初始化工作流目录，生成默认 Agent 角色配置 |
+| `dev-profile` | `AGENT.md` | 上下文注入 | 读取 Agent 角色和项目约束，注入当前会话上下文 |
 | `prd-analyzer` | PRD 文档 | `requirements.md` | 提取结构化需求，平台过滤，发现待澄清项 |
 | `task-decomposer` | 已确认的需求 | `tasks.md` | 拆解开发任务，建立依赖关系并排序 |
 | `tech-designer` | 任务 + 真实代码库 | `tech-design.md` | 基于真实代码设计数据结构、流程、影响范围 |
