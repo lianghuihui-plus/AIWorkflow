@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${SCRIPT_DIR}/install"
 
+echo "🔌 安装 AIWorkFlow skills 到 Cursor..."
+echo ""
+
 count=0
 for script in "$INSTALL_DIR"/*.bash; do
   [ -f "$script" ] || continue
