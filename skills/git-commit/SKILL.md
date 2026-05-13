@@ -64,23 +64,25 @@ YAML 格式非法导致无法解析 → 终止并告知用户具体错误。
 **提交格式：**
 
 ```
-<taskId>
-
+title：<taskId>
+description:
 [AI]
 - Implemented: <描述，不超过 50 字>
 - Affected modules: <模块名>
 ```
 
 按格式生成 commit message：
-- **Title**：用户提供的 taskId
-- **Implemented**：分析变更文件，提炼变更摘要（不超过 50 字）
-- **Affected modules**：涉及的模块名
+- **第一行**：`title：<taskId>`
+- **第二行**：`description:`
+- **第三行**：`[AI]`
+- **第四行**：`- Implemented: <变更摘要>`（不超过 50 字）
+- **第五行**：`- Affected modules: <模块名>`
 
 生成后将完整 message 展示给用户确认：
 
 ```
-T-001
-
+title：T-001
+description:
 [AI]
 - Implemented: 新增登录接口及数据模型
 - Affected modules: auth, login
@@ -90,10 +92,10 @@ T-001
 
 用户确认后在 `CODE_PATH` 下执行：
 
-```
-git add -A
-git commit -m "<完整 message>"
-```
+1. 将确认后的 message 写入临时文件
+2. `git add -A`
+3. `git commit -F <临时文件路径>`
+4. 删除临时文件
 
 提交完成后告知用户：
 - commit hash
