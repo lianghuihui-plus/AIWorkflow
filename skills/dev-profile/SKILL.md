@@ -1,6 +1,6 @@
 ---
 name: dev-profile
-description: 读取 AGENT.md，将 Agent 角色和项目约束注入当前会话上下文。当用户想要预设开发角色和项目规约时使用。
+description: 读取 AGENT.md，将 Agent 角色和项目约束注入当前会话上下文。当用户要加载角色/预设规约/加载 AGENT 时使用。
 ---
 
 # Agent 角色加载

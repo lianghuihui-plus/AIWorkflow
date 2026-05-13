@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: 扫描项目代码仓库的未提交变更，按规范生成 commit message 并提交。当用户完成代码或测试生成后要求提交时使用。
+description: 扫描项目代码仓库的未提交变更，按规范生成 commit message 并提交。当用户要提交/commit/git 提交时使用。
 ---
 
 # Git 提交
@@ -72,7 +72,7 @@ description:
 ```
 
 按格式生成 commit message：
-- **第一行**：`title：<taskId>`
+- **第一行**：`titl: <taskId>`
 - **第二行**：`description:`
 - **第三行**：`[AI]`
 - **第四行**：`- Implemented: <变更摘要>`（不超过 50 字）
