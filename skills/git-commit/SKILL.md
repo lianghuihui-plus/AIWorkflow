@@ -55,7 +55,7 @@ YAML 格式非法导致无法解析 → 终止并告知用户具体错误。
 
 向用户询问本次提交的 taskId：
 
-> 请提供本次提交的 taskId（如 T-001）：
+> 请提供本次提交的 taskId（如 \<taskId\>）：
 
 用户提供后继续。
 
@@ -81,7 +81,7 @@ description:
 生成后将完整 message 展示给用户确认：
 
 ```
-title：T-001
+title：<taskId>
 description:
 [AI]
 - Implemented: 新增登录接口及数据模型

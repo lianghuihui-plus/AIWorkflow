@@ -1,6 +1,6 @@
 # AIWorkFlow
 
-将「从 PRD 到代码」拆解为一组可审核、可追踪、可修订的 AI 辅助开发阶段。配套 Git 提交、Bug 管理工具。
+将「从 PRD 到代码」拆解为一组可审核、可追踪、可修订的 AI 辅助开发阶段。支持需求变更后的增量更新传播。配套 Git 提交、Bug 管理工具。
 
 ## 架构全景
 
@@ -9,36 +9,37 @@
                                │
                                ▼
   PRD ──→ prd-analyzer ──→ task-decomposer ──→ tech-designer
-            │                     │                   │
-            ▼                     ▼                   ▼
+            │  ↑                 │  ↑                │  ↑
+            ▼  │                 ▼  │                ▼  │
      requirements.md          tasks.md          tech-design.md
-                                                      │
-                                                      ▼
-                                            task-spec-generator
-                                                      │
-                                                      ▼
-                                                 specs/*.md
-                                                      │
-                                                      ▼
-                                               code-generator
-                                                      │
-                                              代码 + 报告
-                                                      │
-                                                      ▼
-                                           unit-test-generator
-                                                      │
-                                              测试 + 测试报告
-                                                      │
-                                          ┌───────────┴───────────┐
-                                          ▼                       ▼
-                                     bug-new ──→ bug-fixer    git-commit
-                                          │            │            │
-                                     BUG-XXX.md   修复代码      提交代码
+        需求变更                    │                   │
+            │                      ▼                   ▼
+            │            task-spec-generator    ← 上游变更后
+            │                 │  ↑              逐阶段触发更新
+            │                 ▼  │
+            │            specs/*.md
+            │                 │  ↑
+            │                 ▼  │
+            │           code-generator
+            │                 │
+            │          代码 + 报告
+            │                 │
+            │                 ▼
+            │       unit-test-generator
+            │                 │
+            │          测试 + 测试报告
+            │                 │
+            │      ┌──────────┴───────────┐
+            │      ▼                      ▼
+            │  bug-new ──→ bug-fixer   git-commit
+            │      │           │           │
+            └──────┴───────────┴───────────┘
+              BUG-XXX.md   修复代码     提交代码
 ```
 
 | 类型 | Skill | 说明 |
 |------|-------|------|
-| 管线 | workflow-init → dev-profile → prd-analyzer → task-decomposer → tech-designer → task-spec-generator → code-generator → unit-test-generator | 逐阶段收敛，每阶段需审核确认后才进入下一阶段 |
+| 管线 | workflow-init → dev-profile → prd-analyzer → task-decomposer → tech-designer → task-spec-generator → code-generator → unit-test-generator | 逐阶段收敛，每阶段支持三种模式：初版 / 修订 / 更新 |
 | 工具 | git-commit | 扫描变更、按规范提交 |
 | 工具 | bug-new → bug-fixer | 生成结构化 bug 文档 → 分析根因并修复 |
 | 工具 | workflow-status | 扫描输出目录，生成工作流概览 |
@@ -105,20 +106,35 @@ workflow-{项目名称}/
 
 ## 各阶段说明
 
-| 阶段 | 输入 | 输出 | 核心职责 |
-|------|------|------|----------|
-| `workflow-init` | 用户交互 | `workflow.yaml` + `AGENT.md` | 收集项目信息，初始化工作流目录 |
-| `dev-profile` | `AGENT.md` | 上下文注入 | 加载 Agent 角色和项目约束 |
-| `prd-analyzer` | PRD 文档 | `requirements.md` | 提取结构化需求，发现待澄清项 |
-| `task-decomposer` | 已确认的需求 | `tasks.md` | 拆解开发任务，建立依赖关系 |
-| `tech-designer` | 任务 + 代码仓库 | `tech-design.md` | 基于真实代码设计数据结构与流程 |
-| `task-spec-generator` | 技术方案 | `specs/*.md` | 收敛为逐文件逐修改点的可执行规格 |
-| `code-generator` | 单个任务规格 | 代码 + 生成报告 | 按修改点生成/修改项目代码 |
-| `unit-test-generator` | 代码报告 + 实际代码 | 测试代码 + 测试报告 | 为已确认的代码生成单元测试 |
-| `git-commit` | 代码仓库变更 | git commit | 按规范生成 message 并提交 |
-| `bug-new` | 用户描述或报告引用 | `BUG-XXX.md` | 生成结构化 bug 文档 |
-| `bug-fixer` | `BUG-XXX.md` | 代码修复 + 文档回写 | 分析根因，修复代码并同步测试 |
-| `workflow-status` | `output/` 目录 | `status.md` | 扫描所有报告状态，生成工作流概览 |
+| 阶段 | 输入 | 输出 | 模式 |
+|------|------|------|------|
+| `workflow-init` | 用户交互 | `workflow.yaml` + `AGENT.md` | — |
+| `dev-profile` | `AGENT.md` | 上下文注入 | — |
+| `prd-analyzer` | PRD 文档 | `requirements.md` | 初版 / 修订 |
+| `task-decomposer` | 已确认的需求 | `tasks.md` | 初版 / 修订 / 更新（上游变更后增量更新） |
+| `tech-designer` | 任务 + 代码仓库 | `tech-design.md` | 初版 / 修订 / 更新 |
+| `task-spec-generator` | 技术方案 | `specs/*.md` | 初版 / 修订 / 更新 |
+| `code-generator` | 单个任务规格 | 代码 + 报告 | 初版 / 修订 / 更新 |
+| `unit-test-generator` | 代码报告 + 实际代码 | 测试代码 + 测试报告 | 生成 / 修订 |
+| `git-commit` | 代码仓库变更 | git commit | — |
+| `bug-new` | 用户描述或报告引用 | `BUG-XXX.md` | — |
+| `bug-fixer` | `BUG-XXX.md` | 代码修复 + 文档回写 | — |
+| `workflow-status` | `output/` 目录 | `status.md` | — |
+
+## 需求变更传播
+
+```
+prd-analyzer                  下游各阶段（逐阶段触发）
+
+改文档状态「待审核」           task-decomposer
+对话描述变更 → 修订模式处理     → 更新模式：读 requirements.md → 对比 tasks.md → 增量更新
+                               tech-designer
+                               → 更新模式：读 tasks.md → 对比 tech-design.md → 增量更新
+                               task-spec-generator
+                               → 更新模式：读 tech-design.md → 对比 specs/ → 增量更新
+                               code-generator
+                               → 更新模式：读 spec → 对比 report → 增量更新代码
+```
 
 ## 核心理念
 
@@ -126,4 +142,5 @@ workflow-{项目名称}/
 - **人工审核门禁**：每阶段产物需确认后才进入下一阶段
 - **来源可追溯**：需求 → 任务 → 方案 → 规格 → 代码，完整链路可追踪
 - **修订可收敛**：每阶段支持人工审核后修订，待澄清项解决后自动收敛
+- **增量更新**：需求变更后逐阶段传播，每阶段用自己的规则增量更新产物，无需重跑全管线
 - **一次只做一个**：code-generator、unit-test-generator、bug-fixer 每次处理一个单元
