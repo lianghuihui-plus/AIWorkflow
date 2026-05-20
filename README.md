@@ -5,9 +5,9 @@
 ## 架构全景
 
 ```
-                          workflow-init → dev-profile
-                               │
-                               ▼
+                      workflow-session
+                            │
+                            ▼
   PRD ──→ prd-analyzer ──→ task-decomposer ──→ tech-designer
             │  ↑                 │  ↑                │  ↑
             ▼  │                 ▼  │                ▼  │
@@ -39,7 +39,7 @@
 
 | 类型 | Skill | 说明 |
 |------|-------|------|
-| 管线 | workflow-init → dev-profile → prd-analyzer → task-decomposer → tech-designer → task-spec-generator → code-generator → unit-test-generator | 逐阶段收敛，每阶段支持三种模式：初版 / 修订 / 更新 |
+| 管线 | workflow-session → prd-analyzer → task-decomposer → tech-designer → task-spec-generator → code-generator → unit-test-generator | 逐阶段收敛，每阶段支持三种模式：初版 / 修订 / 更新 |
 | 工具 | git-commit | 扫描变更、按规范提交 |
 | 工具 | bug-new → bug-fixer | 生成结构化 bug 文档 → 分析根因并修复 |
 | 工具 | workflow-status | 扫描输出目录，生成工作流概览 |
@@ -53,7 +53,7 @@
 ./install.sh           # 所有平台
 
 # 在 AI 对话中使用
-# 1. 执行 workflow-init，按提示填写项目信息
+# 1. 执行 workflow-session，选择"新建"或"继续"
 # 2. 进入生成的 workflow-xxx 目录，按顺序执行各阶段
 ```
 
@@ -66,9 +66,8 @@ AIWorkFlow/
 │   ├── cursor/install/
 │   ├── hermes/install/
 │   └── openclaw/install/
-├── skills/                       # 12 个 Skill
-│   ├── workflow-init/
-│   ├── dev-profile/
+├── skills/                       # 11 个 Skill
+│   ├── workflow-session/
 │   ├── prd-analyzer/
 │   ├── task-decomposer/
 │   ├── tech-designer/
@@ -99,19 +98,17 @@ workflow-{项目名称}/
     │   └── T-XXX-report.md
     ├── tests/             # 测试生成报告
     │   └── T-XXX-test-report.md
-    ├── bugs/              # Bug 文档
-    │   └── BUG-XXX.md
-    └── status.md          # 工作流概览
+    └── bugs/              # Bug 文档
+        └── BUG-XXX.md
 ```
 
 ## 各阶段说明
 
 | 阶段 | 输入 | 输出 | 模式 |
 |------|------|------|------|
-| `workflow-init` | 用户交互 | `workflow.yaml` + `AGENT.md` | — |
-| `dev-profile` | `AGENT.md` | 上下文注入 | — |
+| `workflow-session` | 用户交互或已有目录 | `workflow.yaml` + `AGENT.md` 加载 | — |
 | `prd-analyzer` | PRD 文档 | `requirements.md` | 初版 / 修订 |
-| `task-decomposer` | 已确认的需求 | `tasks.md` | 初版 / 修订 / 更新（上游变更后增量更新） |
+| `task-decomposer` | 已审核的需求 | `tasks.md` | 初版 / 修订 / 更新（上游变更后增量更新） |
 | `tech-designer` | 任务 + 代码仓库 | `tech-design.md` | 初版 / 修订 / 更新 |
 | `task-spec-generator` | 技术方案 | `specs/*.md` | 初版 / 修订 / 更新 |
 | `code-generator` | 单个任务规格 | 代码 + 报告 | 初版 / 修订 / 更新 |
@@ -119,7 +116,7 @@ workflow-{项目名称}/
 | `git-commit` | 代码仓库变更 | git commit | — |
 | `bug-new` | 用户描述或报告引用 | `BUG-XXX.md` | — |
 | `bug-fixer` | `BUG-XXX.md` | 代码修复 + 文档回写 | — |
-| `workflow-status` | `output/` 目录 | `status.md` | — |
+| `workflow-status` | `output/` 目录 | 对话输出（不落盘） | — |
 
 ## 需求变更传播
 

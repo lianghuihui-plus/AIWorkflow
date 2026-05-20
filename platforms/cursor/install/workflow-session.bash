@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 注册 workflow-init 命令到 Cursor 全局命令目录
-# 从 skills/workflow-init/SKILL.md 即时生成 .md 命令文件
+# 注册 workflow-session 命令到 Cursor 全局命令目录
+# 从 skills/workflow-session/SKILL.md 即时生成 .md 命令文件
 
 set -euo pipefail
 
 SKILLS_DIR="$(cd "$(dirname "$0")/../../../skills" && pwd)"
-SKILL_FILE="${SKILLS_DIR}/workflow-init/SKILL.md"
+SKILL_FILE="${SKILLS_DIR}/workflow-session/SKILL.md"
 GLOBAL_COMMANDS="${HOME}/.cursor/commands"
 
 if [ ! -f "$SKILL_FILE" ]; then

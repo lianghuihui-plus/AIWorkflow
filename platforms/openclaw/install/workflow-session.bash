@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# 安装 workflow-init 到 OpenClaw workspace skills
-# 从 skills/workflow-init/SKILL.md 读取，添加 OpenClaw frontmatter 后写入
+# 安装 workflow-session 到 OpenClaw workspace skills
+# 从 skills/workflow-session/SKILL.md 读取，添加 OpenClaw frontmatter 后写入
 
 set -euo pipefail
 
 SKILLS_DIR="$(cd "$(dirname "$0")/../../../skills" && pwd)"
-SKILL_FILE="${SKILLS_DIR}/workflow-init/SKILL.md"
-AGENT_FILE="${SKILLS_DIR}/workflow-init/AGENT.md"
-DST_DIR="${HOME}/.openclaw/skills/workflow-init"
+SKILL_FILE="${SKILLS_DIR}/workflow-session/SKILL.md"
+DST_DIR="${HOME}/.openclaw/skills/workflow-session"
 
 [ -f "$SKILL_FILE" ] || { echo "    ❌ 找不到 SKILL: $SKILL_FILE"; exit 1; }
 
@@ -27,7 +26,5 @@ user-invocable: true
 
 $body
 SKILLEOF
-
-cp "$AGENT_FILE" "$DST_DIR/AGENT.md"
 
 echo "    ✅ /$name"

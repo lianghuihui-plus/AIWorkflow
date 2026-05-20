@@ -16,11 +16,11 @@ description: 扫描项目代码仓库的未提交变更，按规范生成 commit
 按以下优先级定位 `workflow.yaml` 所在的工作流根目录：
 
 1. **检查当前目录** — 当前工作目录中存在 `workflow.yaml` → 从该目录读取配置
-2. **检查会话上下文** — 如本会话中已运行过 `workflow-init` 或其他阶段 skill，且已知工作流目录路径 → 使用该路径
+2. **检查会话上下文** — 如本会话中已运行过 `workflow-session` 或其他阶段 skill，且已知工作流目录路径 → 使用该路径
 3. **询问用户** — 以上均未找到时，向用户询问：
    > 我需要知道当前工作流目录路径，请提供 workflow-xxx 目录的路径。
 
-验证定位到的目录中存在 `workflow.yaml`；不存在则提示用户先执行 `workflow-init` 初始化。
+验证定位到的目录中存在 `workflow.yaml`；不存在则提示用户先执行 `workflow-session` 初始化。
 
 定位到 `workflow.yaml` 后，立即解析并执行。
 
