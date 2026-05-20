@@ -53,7 +53,7 @@ YAML 格式非法导致无法解析 → 终止并告知用户具体错误。
 | `{OUT}/tasks.md` | task-decomposer |
 | `{OUT}/tech-design.md` | tech-designer |
 
-此外扫描 `{OUT}/specs/README.md`，获取所有任务列表。对每个任务：
+此外扫描 `{OUT}/specs/INDEX.md`，获取所有任务列表。对每个任务：
 
 - 读取 `{OUT}/specs/T-XXX-spec.md` 的状态 → 确定 task-spec-generator 整体进度
 - 读取 `{OUT}/generated/T-XXX-report.md` 的状态 → 确定 code-generator 进度
