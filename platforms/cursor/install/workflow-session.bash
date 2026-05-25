@@ -13,6 +13,9 @@ if [ ! -f "$SKILL_FILE" ]; then
   exit 1
 fi
 
+AGENT_FILE="${SKILLS_DIR}/workflow-session/AGENT.md"
+[ -f "$AGENT_FILE" ] || { echo "    ❌ 找不到 AGENT: $AGENT_FILE"; exit 1; }
+
 mkdir -p "$GLOBAL_COMMANDS"
 
 # 提取 name
@@ -32,5 +35,6 @@ ${description}
 
 ${body}
 EOF
+cp "$AGENT_FILE" "${GLOBAL_COMMANDS}/workflow-session-AGENT.md"
 
 echo "    ✅ /${skill_name}"

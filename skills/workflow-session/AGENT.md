@@ -27,6 +27,7 @@
 - 禁止使用 `any` 类型，所有变量必须显式声明类型
 - 禁止对 interface/class 字段使用动态索引访问（如 `obj[key]`、`delete obj[key]`），字段过滤或赋值必须使用显式字段访问
 - 禁止使用受限标准库能力（如 `Object.assign`），对象合并必须使用项目内 `assignObject` 方法或显式字段赋值
+- 禁止匿名对象字面量
 
 ## 架构约定
 - 业务模块放在 `features/{模块名}/src/main/ets/` 下
