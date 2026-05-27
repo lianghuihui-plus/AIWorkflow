@@ -61,44 +61,47 @@ YAML 格式非法导致无法解析 → 终止并告知用户具体错误。
 
 ### Step 3：生成 commit message
 
-**提交格式：**
+**提交格式（title + body，空行分隔）：**
 
 ```
-title：<taskId>
-description:
+<taskId>
+
 [AI]
 - Implemented: <描述，不超过 50 字>
 - Affected modules: <模块名>
 ```
 
 按格式生成 commit message：
-- **第一行**：`titl: <taskId>`
-- **第二行**：`description:`
-- **第三行**：`[AI]`
-- **第四行**：`- Implemented: <变更摘要>`（不超过 50 字）
-- **第五行**：`- Affected modules: <模块名>`
+- **第一行（title）**：`<taskId>`
+- **第二行**：空白行（git 以此分隔 title 和 body）
+- **第三行起（body）**：
+  - `[AI]` — AI 提交标记
+  - `- Implemented: <变更摘要>`（不超过 50 字）
+  - `- Affected modules: <模块名>`
 
 生成后将完整 message 展示给用户确认：
 
 ```
-title：<taskId>
-description:
+<taskId>
+
 [AI]
 - Implemented: 新增登录接口及数据模型
 - Affected modules: auth, login
 ```
 
+用户确认 → 继续 Step 4。
+用户拒绝 → 终止，不提交。
+
 ### Step 4：执行提交
 
-用户确认后在 `CODE_PATH` 下执行：
+根据当前需求的改动内容，从 Step 1 的变更列表中筛选出本次相关的文件，然后在 `CODE_PATH` 下执行：
 
-1. 将确认后的 message 写入临时文件
-2. `git add -A`
+1. 将确认后的 message 写入临时文件（如 `/tmp/hermes_commit_msg`）
+2. **只 stage 本次相关的文件**（`git add <file1> <file2> …`），**禁止 `git add -A`**。仅添加与当前需求改动相关的文件，不纳入无关变更（如包管理锁文件、构建产物、IDE 配置等）。**注意：即使某些文件在 `git status` 中显示为已 stage，也必须显式 `git add` 它们**——不要依赖预 stage 状态，`git commit -F` 在某些条件下可能不会纳入预 stage 文件。
 3. `git commit -F <临时文件路径>`
 4. 删除临时文件
+5. **验证**：执行 `git log -1 --name-only`，核对提交的文件列表是否与本 step 中 `git add` 的文件一致。如有遗漏，`git add` 遗漏文件后 `git commit --amend --no-edit`
 
 提交完成后告知用户：
 - commit hash
 - 当前分支名
-
-用户拒绝 → 终止，不提交。
