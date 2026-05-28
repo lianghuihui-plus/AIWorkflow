@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Cursor 平台 - 安装所有命令
-# 用法: ./install.sh
-
+# cursor 平台 - 安装所有 AIWorkFlow V2 skills
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="${SCRIPT_DIR}/install"
-
-echo "🔌 安装 AIWorkFlow skills 到 Cursor..."
+echo "🔌 安装 AIWorkFlow V2 skills 到 cursor..."
 echo ""
-
 count=0
 for script in "$INSTALL_DIR"/*.bash; do
   [ -f "$script" ] || continue
@@ -18,6 +13,5 @@ for script in "$INSTALL_DIR"/*.bash; do
   bash "$script"
   count=$((count + 1))
 done
-
 echo ""
-echo "✅ Cursor 命令已安装 ${count} 条"
+echo "✅ cursor V2 skills 已安装 ${count} 条"

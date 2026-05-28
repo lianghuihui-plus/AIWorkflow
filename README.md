@@ -1,143 +1,104 @@
 # AIWorkFlow
 
-将「从 PRD 到代码」拆解为一组可审核、可追踪、可修订的 AI 辅助开发阶段。支持需求变更后的增量更新传播。配套 Git 提交、Bug 管理工具。
-
-## 架构全景
-
-```
-                      workflow-session
-                            │
-                            ▼
-  PRD ──→ prd-analyzer ──→ task-decomposer ──→ tech-designer
-            │  ↑                 │  ↑                │  ↑
-            ▼  │                 ▼  │                ▼  │
-     requirements.md          tasks.md          tech-design.md
-        需求变更                    │                   │
-            │                      ▼                   ▼
-            │            task-spec-generator    ← 上游变更后
-            │                 │  ↑              逐阶段触发更新
-            │                 ▼  │
-            │            specs/*.md
-            │                 │  ↑
-            │                 ▼  │
-            │           code-generator
-            │                 │
-            │          代码 + 报告
-            │                 │
-            │                 ▼
-            │       unit-test-generator
-            │                 │
-            │          测试 + 测试报告
-            │                 │
-            │      ┌──────────┴───────────┐
-            │      ▼                      ▼
-            │  bug-new ──→ bug-fixer   git-commit
-            │      │           │           │
-            └──────┴───────────┴───────────┘
-              BUG-XXX.md   修复代码     提交代码
-```
-
-| 类型 | Skill | 说明 |
-|------|-------|------|
-| 管线 | workflow-session → prd-analyzer → task-decomposer → tech-designer → task-spec-generator → code-generator → unit-test-generator | 逐阶段收敛，每阶段支持三种模式：初版 / 修订 / 更新 |
-| 工具 | git-commit | 扫描变更、按规范提交 |
-| 工具 | bug-new → bug-fixer | 生成结构化 bug 文档 → 分析根因并修复 |
-| 工具 | workflow-status | 扫描输出目录，生成工作流概览 |
-
-## 快速开始
-
-```bash
-# 安装到指定平台
-./install.sh cursor    # Cursor
-./install.sh hermes    # Hermes Agent
-./install.sh           # 所有平台
-
-# 在 AI 对话中使用
-# 1. 执行 workflow-session，选择"新建"或"继续"
-# 2. 进入生成的 workflow-xxx 目录，按顺序执行各阶段
-```
-
-## 目录结构
-
-```
-AIWorkFlow/
-├── install.sh                    # 统一安装入口
-├── platforms/                    # 各平台安装脚本
-│   ├── cursor/install/
-│   ├── hermes/install/
-│   └── openclaw/install/
-├── skills/                       # 11 个 Skill
-│   ├── workflow-session/
-│   ├── prd-analyzer/
-│   ├── task-decomposer/
-│   ├── tech-designer/
-│   ├── task-spec-generator/
-│   ├── code-generator/
-│   ├── unit-test-generator/
-│   ├── git-commit/
-│   ├── bug-new/
-│   ├── bug-fixer/
-│   └── workflow-status/
-└── README.md
-```
-
-安装后在项目目录生成的工作流目录结构：
-
-```
-workflow-{项目名称}/
-├── workflow.yaml          # 配置文件（各阶段的唯一配置入口）
-├── AGENT.md               # Agent 角色与项目约束
-└── output/
-    ├── requirements.md    # 需求分析
-    ├── tasks.md           # 任务分解
-    ├── tech-design.md     # 技术方案
-    ├── specs/             # 开发规格
-    │   ├── README.md
-    │   └── T-XXX-spec.md
-    ├── generated/         # 代码生成报告
-    │   └── T-XXX-report.md
-    ├── tests/             # 测试生成报告
-    │   └── T-XXX-test-report.md
-    └── bugs/              # Bug 文档
-        └── BUG-XXX.md
-```
-
-## 各阶段说明
-
-| 阶段 | 输入 | 输出 | 模式 |
-|------|------|------|------|
-| `workflow-session` | 用户交互或已有目录 | `workflow.yaml` + `AGENT.md` 加载 | — |
-| `prd-analyzer` | PRD 文档 | `requirements.md` | 初版 / 修订 |
-| `task-decomposer` | 已审核的需求 | `tasks.md` | 初版 / 修订 / 更新（上游变更后增量更新） |
-| `tech-designer` | 任务 + 代码仓库 | `tech-design.md` | 初版 / 修订 / 更新 |
-| `task-spec-generator` | 技术方案 | `specs/*.md` | 初版 / 修订 / 更新 |
-| `code-generator` | 单个任务规格 | 代码 + 报告 | 初版 / 修订 / 更新 |
-| `unit-test-generator` | 代码报告 + 实际代码 | 测试代码 + 测试报告 | 生成 / 修订 |
-| `git-commit` | 代码仓库变更 | git commit | — |
-| `bug-new` | 用户描述或报告引用 | `BUG-XXX.md` | — |
-| `bug-fixer` | `BUG-XXX.md` | 代码修复 + 文档回写 | — |
-| `workflow-status` | `output/` 目录 | 对话输出（不落盘） | — |
-
-## 需求变更传播
-
-```
-prd-analyzer                  下游各阶段（逐阶段触发）
-
-改文档状态「待审核」           task-decomposer
-对话描述变更 → 修订模式处理     → 更新模式：读 requirements.md → 对比 tasks.md → 增量更新
-                               tech-designer
-                               → 更新模式：读 tasks.md → 对比 tech-design.md → 增量更新
-                               task-spec-generator
-                               → 更新模式：读 tech-design.md → 对比 specs/ → 增量更新
-                               code-generator
-                               → 更新模式：读 spec → 对比 report → 增量更新代码
-```
+基于工作空间的 AI 辅助开发流程。将"需求到代码"拆解为可追踪的阶段，Agent 在共享上下文中推进，支持跨会话恢复和人工决策收敛。
 
 ## 核心理念
 
-- **逐阶段收敛**：每个阶段减少不确定性，不跨阶段跳步
-- **人工审核门禁**：每阶段产物需确认后才进入下一阶段
-- **来源可追溯**：需求 → 任务 → 方案 → 规格 → 代码，完整链路可追踪
-- **修订可收敛**：每阶段支持人工审核后修订，待澄清项解决后自动收敛
-- **增量更新**：需求变更后逐阶段传播，每阶段用自己的规则增量更新产物，无需重跑全管线
-- **一次只做一个**：code-generator、unit-test-generator、bug-fixer 每次处理一个单元
+- **共享上下文**：Agent 启动时一次性加载 README + CONTEXT + ISSUES + JOURNAL，不重复读取
+- **松散耦合**：各阶段按推荐顺序推进但可跳过、回退、交叉，Agent 自主判断
+- **问题收敛**：任何阶段发现问题写入 ISSUES，人工决策后自动执行并归档
+- **跨会话恢复**：JOURNAL 持续记录进度，下次启动无缝接续
+
+## 技能
+
+| # | 阶段 | Skill | 产出 |
+|---|------|-------|------|
+| 1 | 需求分析 | `wf-prd-analyzer` | `output/analysis.md` |
+| 2 | 技术方案 | `wf-tech-designer` | `output/design.md` |
+| 3 | 开发规格 | `wf-spec-generator` | `output/specs/T-XXX.md` |
+| 4 | 代码生成 | `wf-code-generator` | 写入代码仓库 |
+| 5 | 测试 | `wf-test-generator` | 写入测试代码 |
+
+辅助：`wf-git-commit`（提交）· `wf-status`（概览）
+
+## 安装
+
+```bash
+./install.sh           # 所有平台
+./install.sh cursor    # 只装 Cursor
+./install.sh hermes    # 只装 Hermes
+```
+
+## 工作空间
+
+### 目录结构
+
+```
+workspace-{项目}/
+├── README.md           ← 入口：工作流 + 规范
+├── CONTEXT.md          ← 需求概要、当前阶段、代码产出、测试记录
+├── ISSUES.md           ← 待澄清问题，按阶段分组
+├── JOURNAL.md          ← 工作日志，每操作一记
+├── CHANGELOG.md        ← 已解决决策的时间线归档
+├── AGENT.md            ← 编码约束
+├── prd/                ← 原始 PRD 文件副本
+└── output/
+    ├── analysis.md     ← 结构化需求分析
+    ├── design.md       ← 任务拆解 + 技术方案
+    └── specs/          ← 逐文件编码指令
+```
+
+### 文件职责
+
+| 文件 | 职责 | 写入时机 |
+|------|------|---------|
+| `CONTEXT.md` | 需求概要、当前阶段、下一步、代码产出、测试记录 | 阶段推进时更新 |
+| `ISSUES.md` | 待人工决策的问题，按阶段分组 | 发现问题时写入 |
+| `JOURNAL.md` | 工作进度日志 | 每完成一个操作追加 |
+| `CHANGELOG.md` | 已解决决策归档 | 问题解决时追加 |
+
+### 工作规范
+
+**写操作规则：**
+
+| 场景 | 文件 | 位置 | 格式 |
+|------|------|------|------|
+| 发现问题 | `ISSUES.md` | 对应阶段下追加 Q-xxx | 问题/AI建议/影响/状态 |
+| 问题解决 | `CHANGELOG.md` | 文件末尾按日期追加 | 时间线格式 |
+| 阶段推进 | `CONTEXT.md` | `## 当前状态` 更新 | 阶段/下一步 |
+| 操作完成 | `JOURNAL.md` | 文件末尾按日期追加 | HH:MM 时间戳 + 内容 |
+
+**问题收敛：**
+
+1. 任何 skill 发现问题 → 写入 ISSUES.md，状态「待决策」
+2. 用户填写「人工决策」
+3. Agent 扫描 ISSUES，检测已填但待决策的条目
+4. 按决策执行 → CHANGELOG 归档 → 状态改「已解决」
+
+**阶段推进：**
+
+| Skill | 完成后 CONTEXT 更新 |
+|-------|-------------------|
+| `wf-prd-analyzer` | 需求分析完成 → 下一步：wf-tech-designer |
+| `wf-tech-designer` | 技术方案完成 → 下一步：wf-spec-generator |
+| `wf-spec-generator` | 规格生成完成 → 下一步：wf-code-generator |
+| `wf-code-generator` | 标注任务 ✅ · 全部完成则代码生成完成 |
+| `wf-test-generator` | 标注任务 ✅ · 全部完成则测试完成 |
+
+**跨会话恢复：**
+
+1. 读 JOURNAL 最后一条 → 了解上次进度
+2. 产物比 JOURNAL 新 → 扫描差异自动补录
+
+## 快速开始
+
+```
+# 1. 创建工作空间
+执行 wf-init
+
+# 2. 按阶段推进
+wf-prd-analyzer → wf-tech-designer → wf-spec-generator → wf-code-generator → wf-test-generator
+
+# 3. 随时查看
+wf-status
+```
