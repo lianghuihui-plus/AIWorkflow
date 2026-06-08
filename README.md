@@ -16,10 +16,10 @@
 | 1 | 需求分析 | `wf-prd-analyzer` | `output/analysis.md` |
 | 2 | 技术方案 | `wf-tech-designer` | `output/design.md` |
 | 3 | 开发规格 | `wf-spec-generator` | `output/specs/T-XXX.md` |
-| 4 | 代码生成 | `wf-code-generator` | 写入代码仓库 |
-| 5 | 测试 | `wf-test-generator` | 写入测试代码 |
+| 4 | 代码生成 | `wf-code-generator` | `output/report-T-XXX.md` + 写入代码仓库 |
+| 5 | 测试 | `wf-test-generator` | `output/test-report-T-XXX.md` + 写入测试代码 |
 
-辅助：`wf-git-commit`（提交）· `wf-status`（概览）
+辅助：`wf-git-commit`（提交）· `wf-status`（状态与健康检查）
 
 ## 安装
 
@@ -70,10 +70,25 @@ workspace-{项目}/
 
 **问题收敛：**
 
-1. 任何 skill 发现问题 → 写入 ISSUES.md，状态「待决策」
+1. 任何 skill 发现问题 → 写入 `ISSUES.md`，状态「待决策」
 2. 用户填写「人工决策」
-3. Agent 扫描 ISSUES，检测已填但待决策的条目
-4. 按决策执行 → CHANGELOG 归档 → 状态改「已解决」
+3. 用户要求处理时，Agent 读取 `ISSUES.md` 找到目标 Q-xxx 条目
+4. 按决策执行，完成后：
+   - 更新受影响的产物文件
+   - 在 `CHANGELOG.md` 末尾追加归档：
+
+     ```
+     ## YYYY-MM-DD
+
+     ### HH:MM — [问题简述]（来自 ISSUES.md Q-xxx）
+
+     - **问题：** [原文照搬]
+     - **决策：** [人工决策内容]
+     - **影响：** [原文照搬]
+     ```
+
+   - 从 `ISSUES.md` 删除该 Q-xxx 条目
+   - 在 `JOURNAL.md` 追加操作日志
 
 **阶段推进：**
 
@@ -87,8 +102,7 @@ workspace-{项目}/
 
 **跨会话恢复：**
 
-1. 读 JOURNAL 最后一条 → 了解上次进度
-2. 产物比 JOURNAL 新 → 扫描差异自动补录
+读 `JOURNAL.md` 最后一条 → 了解上次进度，继续工作。
 
 ## 快速开始
 

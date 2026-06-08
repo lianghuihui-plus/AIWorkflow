@@ -73,16 +73,16 @@ workspace-{项目名称}/
 | 1 | 需求分析 | `wf-prd-analyzer` | `output/analysis.md` |
 | 2 | 技术方案 | `wf-tech-designer` | `output/design.md` |
 | 3 | 开发规格 | `wf-spec-generator` | `output/specs/T-XXX.md` |
-| 4 | 代码生成 | `wf-code-generator` | 写入代码仓库 |
-| 5 | 测试 | `wf-test-generator` | 写入测试代码 |
+| 4 | 代码生成 | `wf-code-generator` | `output/report-T-XXX.md` + 写入代码仓库 |
+| 5 | 测试 | `wf-test-generator` | `output/test-report-T-XXX.md` + 写入测试代码 |
 
-辅助：`wf-git-commit`（提交）· `wf-status`（概览）
+辅助：`wf-git-commit`（提交）· `wf-status`（状态与健康检查）
 
 编码规范见 `AGENT.md`。需要人工决策的问题见 `ISSUES.md`。
 
 ## 待决策
 
-暂无待决策问题 — 详见 `ISSUES.md`
+详见 `ISSUES.md`
 
 ## 文件索引
 
@@ -108,6 +108,8 @@ workspace-{项目名称}/
 | `output/analysis.md` | 结构化需求分析 |
 | `output/design.md` | 任务拆解 + 技术方案 |
 | `output/specs/T-XXX.md` | 逐文件编码指令 |
+| `output/report-T-XXX.md` | 代码生成结果、偏离说明 |
+| `output/test-report-T-XXX.md` | 测试用例清单、覆盖情况 |
 
 ## 工作规范
 
@@ -134,13 +136,27 @@ workspace-{项目名称}/
 
 1. 任何 skill 发现问题 → 写入 `ISSUES.md`，状态「待决策」
 2. 用户在任何时候填写「人工决策」
-3. Agent 执行过程中**主动扫描** `ISSUES.md`，发现人工决策已填写且状态为「待决策」的条目
-4. 按决策执行：更新受影响产物 → `CHANGELOG.md` 归档 → ISSUES 状态改「已解决」（条目保留不删）
+3. 用户要求处理时，Agent 读取 `ISSUES.md` 找到目标 Q-xxx 条目
+4. 按决策执行，完成后：
+   - 更新受影响的产物文件
+   - 在 `CHANGELOG.md` 末尾追加归档：
+
+     ```
+     ## YYYY-MM-DD
+
+     ### HH:MM — [问题简述]（来自 ISSUES.md Q-xxx）
+
+     - **问题：** [原文照搬]
+     - **决策：** [人工决策内容]
+     - **影响：** [原文照搬]
+     ```
+
+   - 从 `ISSUES.md` 删除该 Q-xxx 条目
+   - 在 `JOURNAL.md` 追加操作日志
 
 ### 跨会话恢复
 
-1. 读 `JOURNAL.md` 最后一条 → 了解上次进度
-2. 如果产物文件修改时间晚于 JOURNAL 最后记录 → 扫描差异自动补录
+读 `JOURNAL.md` 最后一条 → 了解上次进度，继续工作。
 ```
 
 ### Step 7：生成 CONTEXT.md
