@@ -1,51 +1,57 @@
 # AIWorkFlow
 
-基于工作空间的 AI 辅助开发流程。将"需求到代码"拆解为可追踪的阶段，Agent 在共享上下文中推进，支持跨会话恢复和人工决策收敛。
+基于工作空间的 AI 辅助开发流程。通过 `wf` 主入口读取工作空间状态、运行时规则和能力契约，让 Agent 在共享上下文中推进，支持跨会话恢复和人工决策收敛。
 
 ## 核心理念
 
-- **共享上下文**：Agent 启动时一次性加载 README + CONTEXT + ISSUES + JOURNAL，不重复读取
-- **松散耦合**：各阶段按推荐顺序推进但可跳过、回退、交叉，Agent 自主判断
-- **问题收敛**：任何阶段发现问题写入 ISSUES，人工决策后自动执行并归档
+- **运行时入口**：用户主要执行 `wf`，由主入口判断当前状态和下一步
+- **共享上下文**：Agent 加载 AGENT + CONTEXT + ISSUES + REVISIONS + JOURNAL，按工作空间规则行动
+- **能力契约**：需求分析、技术设计、规格、代码、测试作为能力保留，不再依赖用户手动串联
+- **问题收敛**：任何能力发现问题写入 ISSUES，人工决策后自动执行并归档
+- **人工审核**：每个阶段产物生成后必须由用户审核确认，确认前不得进入下一步
 - **跨会话恢复**：JOURNAL 持续记录进度，下次启动无缝接续
 
-## 技能
+## 技能入口
 
-| # | 阶段 | Skill | 产出 |
-|---|------|-------|------|
-| 1 | 需求分析 | `wf-prd-analyzer` | `output/analysis.md` |
-| 2 | 技术方案 | `wf-tech-designer` | `output/design.md` |
-| 3 | 开发规格 | `wf-spec-generator` | `output/specs/T-XXX.md` |
-| 4 | 代码生成 | `wf-code-generator` | `output/report-T-XXX.md` + 写入代码仓库 |
-| 5 | 测试 | `wf-test-generator` | `output/test-report-T-XXX.md` + 写入测试代码 |
+| Skill | 用途 |
+|---|---|
+| `wf` | 主入口：继续、下一步、处理问题、生成代码、生成测试、状态推进 |
+| `wf-init` | 初始化工作空间 |
+| `wf-status` | 状态与健康检查，不落盘 |
 
-辅助：`wf-git-commit`（提交）· `wf-status`（状态与健康检查）
+## Skill 结构
 
-## 安装
-
-```bash
-./install.sh           # 所有平台
-./install.sh cursor    # 只装 Cursor
-./install.sh hermes    # 只装 Hermes
-```
+| 路径 | 职责 |
+|---|---|
+| `wf/SKILL.md` | 工作流主入口 |
+| `wf/runtime.md` | 工作流通用读写规则 |
+| `wf/state-machine.md` | 状态和事件转移 |
+| `wf/guards.md` | 执行前门禁 |
+| `wf/capabilities/` | 阶段能力契约 |
+| `wf/contracts/` | 产物格式契约，包含 `REVISIONS.md` 修订契约和审核状态契约 |
+| `wf-init/SKILL.md` | 工作空间初始化入口 |
+| `wf-init/templates/` | 工作空间初始化模板 |
 
 ## 工作空间
 
 ### 目录结构
 
 ```
-workspace-{项目}/
-├── README.md           ← 入口：工作流 + 规范
+./
+├── README.md           ← 工作空间说明
+├── AGENT.md            ← Agent 运行约束
 ├── CONTEXT.md          ← 需求概要、当前阶段、代码产出、测试记录
 ├── ISSUES.md           ← 待澄清问题，按阶段分组
+├── REVISIONS.md        ← 用户主动提出的产物修订
 ├── JOURNAL.md          ← 工作日志，每操作一记
 ├── CHANGELOG.md        ← 已解决决策的时间线归档
-├── AGENT.md            ← 编码约束
 ├── prd/                ← 原始 PRD 文件副本
 └── output/
     ├── analysis.md     ← 结构化需求分析
     ├── design.md       ← 任务拆解 + 技术方案
-    └── specs/          ← 逐文件编码指令
+    ├── specs/          ← 逐文件编码指令
+    ├── report-T-XXX.md ← 代码生成报告
+    └── test-report-T-XXX.md ← 测试报告
 ```
 
 ### 文件职责
@@ -54,6 +60,7 @@ workspace-{项目}/
 |------|------|---------|
 | `CONTEXT.md` | 需求概要、当前阶段、下一步、代码产出、测试记录 | 阶段推进时更新 |
 | `ISSUES.md` | 待人工决策的问题，按阶段分组 | 发现问题时写入 |
+| `REVISIONS.md` | 用户主动提出的产物修订意见 | 用户通过对话或文件提出修订时写入 |
 | `JOURNAL.md` | 工作进度日志 | 每完成一个操作追加 |
 | `CHANGELOG.md` | 已解决决策归档 | 问题解决时追加 |
 
@@ -63,7 +70,8 @@ workspace-{项目}/
 
 | 场景 | 文件 | 位置 | 格式 |
 |------|------|------|------|
-| 发现问题 | `ISSUES.md` | 对应阶段下追加 Q-xxx | 问题/AI建议/影响/状态 |
+| 发现问题 | `ISSUES.md` | 对应阶段下追加 Q-XXX | 问题/AI建议/影响/提出/人工决策/状态 |
+| 用户提出修订 | `REVISIONS.md` | `## 待处理` 下追加 R-XXX | 目标产物/修订类型/用户意见/影响范围/状态 |
 | 问题解决 | `CHANGELOG.md` | 文件末尾按日期追加 | 时间线格式 |
 | 阶段推进 | `CONTEXT.md` | `## 当前状态` 更新 | 阶段/下一步 |
 | 操作完成 | `JOURNAL.md` | 文件末尾按日期追加 | HH:MM 时间戳 + 内容 |
@@ -85,20 +93,31 @@ workspace-{项目}/
      - **问题：** [原文照搬]
      - **决策：** [人工决策内容]
      - **影响：** [原文照搬]
+     - **处理：** [已更新产物]
      ```
 
    - 从 `ISSUES.md` 删除该 Q-xxx 条目
    - 在 `JOURNAL.md` 追加操作日志
 
+**修订收敛：**
+
+1. 用户通过对话提出明确产物修订 → 写入 `REVISIONS.md` 的 `## 待处理`
+2. 用户执行 `wf`
+3. Agent 读取待处理 R-XXX 条目并同步目标产物和受影响下游
+4. 完成后将 R-XXX 移入 `## 已处理`，补充处理结果、更新产物和处理时间
+5. 在 `JOURNAL.md` 追加操作日志
+
+**人工审核：**
+
+1. Agent 生成或修订 `output/analysis.md`、`output/design.md`、`output/specs/T-XXX.md`、`output/report-T-XXX.md` 或 `output/test-report-T-XXX.md` 后，产物状态为 `待审核`
+2. 此时 `CONTEXT.md` 的下一步为 `review-artifact`，不会重复执行生成能力
+3. 用户审核后，可以直接说“确认通过 analysis”或“这个规格需要修改”
+4. 确认通过时，Agent 先校验产物契约，再将产物审核状态改为 `已确认` 并推进状态机
+5. 需要修改时，Agent 将意见写入 `REVISIONS.md`，收敛后重新进入 `待审核`
+
 **阶段推进：**
 
-| Skill | 完成后 CONTEXT 更新 |
-|-------|-------------------|
-| `wf-prd-analyzer` | 需求分析完成 → 下一步：wf-tech-designer |
-| `wf-tech-designer` | 技术方案完成 → 下一步：wf-spec-generator |
-| `wf-spec-generator` | 规格生成完成 → 下一步：wf-code-generator |
-| `wf-code-generator` | 标注任务 ✅ · 全部完成则代码生成完成 |
-| `wf-test-generator` | 标注任务 ✅ · 全部完成则测试完成 |
+阶段推进由 `wf` 根据自身目录下的 `state-machine.md` 统一处理。阶段能力不再作为独立 skill 暴露，而是放在 `wf/capabilities/` 中由 `wf` 按需加载。
 
 **跨会话恢复：**
 
@@ -107,12 +126,14 @@ workspace-{项目}/
 ## 快速开始
 
 ```
-# 1. 创建工作空间
+# 1. 创建并进入一个空目录，然后初始化工作空间
 执行 wf-init
 
-# 2. 按阶段推进
-wf-prd-analyzer → wf-tech-designer → wf-spec-generator → wf-code-generator → wf-test-generator
+# 2. 继续工作流
+执行 wf
 
 # 3. 随时查看
 wf-status
 ```
+
+> 如果初始化时填写代码仓库为“无”，流程可以推进到规格生成；代码实现和测试生成需要补充有效代码仓库路径后再执行 `wf`。
