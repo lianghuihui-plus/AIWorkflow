@@ -23,10 +23,13 @@
 - `JOURNAL.md` 和 `CHANGELOG.md` 存在；缺失时进入工作空间修复建议。
 - `prd/` 和 `output/` 存在。
 - `CONTEXT.md` 中当前阶段和下一步可识别，下一步应使用运行时能力名称。
+- `CONTEXT.md` 包含 `待处理产物` 字段，且待处理产物列表与阶段产物审核状态一致。
 - `ISSUES.md` 中问题编号唯一。
 - `REVISIONS.md` 中修订编号唯一。
 
 待决策问题默认是 `warn`。如果待决策问题直接影响当前请求能力或必要产物，则升级为 `fail`。
+
+通用门禁中的确定性结构检查应优先委托当前 skill 目录下的 `tools/validate.py`。Agent 只处理校验器无法判断的语义问题、影响范围判断和人工决策。
 
 ## 分能力门禁
 
@@ -54,6 +57,8 @@
 
 以 `contracts/context.md` 为任务索引解析依据。
 
+任务完成事实以阶段产物及审核状态为准，`CONTEXT.md` 仅作为状态快照。`CONTEXT.md` 与产物事实冲突时是状态不一致，应进入 `blocked_by_inconsistent_state` / `fix-workspace`，不得信任快照继续推进。
+
 - 任务编号重复是 `fail`。
 - 规格索引中列出任务但缺少 `output/specs/T-XXX.md` 是 `warn`；当请求实现该任务时是 `fail`。
 - 任务标记已实现但缺少 `output/report-T-XXX.md` 是 `warn`；当测试依赖该任务时是 `fail`。
@@ -71,6 +76,7 @@
 - 只有审核状态为 `已确认` 的产物才能作为下游阶段能力输入。
 - `review-artifact` 以存在 `待审核` 或 `需修改` 产物为通过条件，不受上述下游能力门禁阻塞。
 - `下一步=review-artifact` 时，不得执行生成能力；只能处理确认、修订或输出待审核清单。
+- 存在 `待审核` 或 `需修改` 产物时，`CONTEXT.md` 的 `待处理产物` 必须列出全部目标；缺失或不一致是状态不一致。
 
 ## 修复建议
 

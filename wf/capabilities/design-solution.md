@@ -6,12 +6,10 @@
 
 ## 前置条件
 
-- `CONTEXT.md` 存在。
 - `output/analysis.md` 存在。
 
 ## 输入
 
-- `CONTEXT.md`：目标平台、可选代码仓库路径。
 - `output/analysis.md`：已纳入需求和行为细节。
 - 可选 `output/design.md`：已有设计，用于修订时保持任务结构稳定。
 

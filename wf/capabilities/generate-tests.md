@@ -6,14 +6,13 @@
 
 ## 前置条件
 
-- `CONTEXT.md` 存在，且包含非空、不是 `无`、可访问的代码仓库路径。
+- 代码仓库路径非空、不是 `无`、可访问。
 - 目标 `output/specs/T-XXX.md` 存在。
 - 目标 `output/report-T-XXX.md` 存在。
 - 目标任务已实现但尚未测试。
 
 ## 输入
 
-- `CONTEXT.md`：代码仓库路径和任务状态。
 - `output/specs/T-XXX.md`：关键行为和修改点。
 - `output/report-T-XXX.md`：实际实现和偏离说明。
 - 相关源码文件和已有测试模式。

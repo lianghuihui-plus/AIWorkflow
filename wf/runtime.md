@@ -10,17 +10,65 @@
 
 如果存在 `CONTEXT.md`，但缺少 `AGENT.md`、`ISSUES.md`、`REVISIONS.md`、`JOURNAL.md`、`CHANGELOG.md`、`prd/` 或 `output/`，则视为不完整工作空间。此时必须先输出修复建议，不得继续执行会改变状态的工作。
 
-## 必须加载的上下文
+## 事务内读取策略
 
-任何需求分析、技术设计、规格生成、代码实现、测试生成、决策处理或状态推进操作前，必须按顺序读取：
+任何需求分析、技术设计、规格生成、代码实现、测试生成、决策处理或状态推进操作，都必须按“最小识别上下文 + 按动作补读”的方式读取文件。
+
+每次 `wf` 执行视为一个事务。事务内应维护已读文件集合：
+
+- 文件路径
+- 读取用途
+- 是否在本事务内被修改、重建或判定失效
+
+入口阶段只读取识别状态和目标动作所需的最小上下文：
 
 1. 工作空间 `AGENT.md`
 2. 工作空间 `CONTEXT.md`
-3. 工作空间 `ISSUES.md`
-4. 工作空间 `REVISIONS.md`
+3. 工作空间 `ISSUES.md` 摘要；处理指定 `Q-XXX` 时读取目标问题完整内容
+4. 工作空间 `REVISIONS.md` 摘要；处理指定 `R-XXX` 时读取目标修订完整内容
 5. `JOURNAL.md` 中最近相关记录
-6. `guards.md`
-7. 当前动作需要的能力契约和产物契约
+
+入口阶段不默认读取完整 `output/`、全部 `capabilities/`、全部 `contracts/`、完整 `runtime.md`、完整 `state-machine.md` 或完整 `guards.md`。进入具体动作后，只补读该动作需要且尚未读取的能力、契约、目标产物和代码文件。
+
+同一事务中，如果文件已经读取且未被本事务修改、重建或判定失效，后续步骤必须复用已读内容，不重复读取。以下情况必须重新读取相关文件：
+
+- `rebuild_context.py` 更新了 `CONTEXT.md`。
+- Agent 写入或修改了 `ISSUES.md`、`REVISIONS.md`、`CHANGELOG.md` 或阶段产物。
+- Agent 追加了 `JOURNAL.md`，且后续输出依赖最新日志内容。
+- 用户在对话中说明已手动修改某个文件。
+- `tools/validate.py` 输出与已读内容冲突。
+- 进入下一次 `wf` 事务或新会话。
+
+确定性结构检查优先通过当前 skill 目录下的 `tools/validate.py` 执行。Agent 不应为了状态检查和门禁判断读取全量 `output/` 产物；校验器输出通过后，只读取当前动作目标产物、异常定位文件以及必要契约。
+
+`runtime.md`、`state-machine.md`、`guards.md` 只在需要解释事务规则、状态迁移或补充语义门禁时读取。如果这些文件已经在当前事务中读取且未被修改，不重复读取。
+
+## 按动作补读清单
+
+以下清单表示进入动作后需要补读的文件；已在当前事务中读取且未失效的文件不重复读取。
+
+| 动作 | 补读文件 |
+|---|---|
+| `analyze-requirements` | `capabilities/analyze-requirements.md`、`contracts/analysis.md`、`contracts/review-status.md`、`prd/*` |
+| `design-solution` | `capabilities/design-solution.md`、`contracts/design.md`、`contracts/review-status.md`、`output/analysis.md`、必要代码仓库结构 |
+| `generate-specs` | `capabilities/generate-specs.md`、`contracts/spec.md`、`contracts/review-status.md`、`output/analysis.md`、`output/design.md`、必要代码仓库结构 |
+| `implement-code` | `capabilities/implement-code.md`、`contracts/spec.md`、`contracts/code-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、`output/design.md` 中对应任务、`output/analysis.md` 中关联需求、相关源码 |
+| `generate-tests` | `capabilities/generate-tests.md`、`contracts/test-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、目标 `output/report-T-XXX.md`、相关源码、已有测试模式 |
+| `review-artifact` | 目标产物、目标产物对应契约、`contracts/review-status.md`、必要时读取 `state-machine.md` |
+| `resolve-decision` | `ISSUES.md` 中目标 `Q-XXX`、`contracts/issues.md`、`contracts/changelog.md`、目标问题影响的产物 |
+| 修订收敛 | `REVISIONS.md` 中目标 `R-XXX`、`contracts/revisions.md`、目标产物契约、`contracts/review-status.md`、目标产物、受影响下游产物 |
+| `fix-workspace` | `tools/validate.py` 输出指向的异常文件；如果只是 `CONTEXT.md` 快照漂移，执行 `tools/rebuild_context.py` 后重读 `CONTEXT.md` |
+
+## 写入后重读规则
+
+写入后应将对应文件标记为已修改。如果后续判断依赖该文件内容，必须重新读取。
+
+- 写入阶段产物后，如果后续需要使用该产物内容，必须重新读取目标产物。
+- 修改产物审核状态后，应运行或等效执行 `rebuild_context.py`，然后重新读取 `CONTEXT.md`。
+- 写入 `ISSUES.md` 后，如果本事务还需要读取待决策数量或目标问题，必须重新读取 `ISSUES.md`。
+- 写入 `REVISIONS.md` 后，如果本事务还要处理修订列表，必须重新读取 `REVISIONS.md`。
+- 追加 `JOURNAL.md` 后，通常不需要重新读取，除非后续输出依赖最新日志内容。
+- `rebuild_context.py` 更新 `CONTEXT.md` 后，必须重新读取 `CONTEXT.md`，再继续依赖上下文快照的判断。
 
 ## 事务模型
 
@@ -28,11 +76,11 @@
 
 1. 读取当前状态。
 2. 检查 `REVISIONS.md` 是否存在待处理修订；若存在，优先执行修订收敛。
-3. 执行门禁检查。
+3. 执行 `tools/validate.py` 和门禁检查；可脚本化硬规则以校验器结果为准，语义判断仍由 Agent 按契约处理。
 4. 选择 `capabilities/` 中的一个能力；处理人工决策或修订收敛时不选择能力，改为执行对应运行时流程。
 5. 执行能力、决策处理或修订收敛。
 6. 写入能力产物、决策归档或修订归档。
-7. 根据产物审核状态和 `state-machine.md` 更新 `CONTEXT.md`。
+7. 根据产物审核状态和 `state-machine.md` 更新 `CONTEXT.md`；如只是状态快照漂移，优先通过 `rebuild_context.py` 重建。
 8. 必要时写入或解决 `ISSUES.md`。
 9. 追加 `JOURNAL.md`。
 10. 输出本次结果和下一步建议。
@@ -40,6 +88,25 @@
 如果执行过程中发现必须由人工决策的问题，则写入 `ISSUES.md` 和 `JOURNAL.md`，并将 `CONTEXT.md` 更新为 `blocked_by_decision` / `resolve-decision` 后停止。不得在同一次事务中继续推进到下一个能力。
 
 如果门禁失败是缺少必要输入或工作空间文件，则将 `CONTEXT.md` 更新为 `blocked_by_missing_input` / `fix-workspace`。如果门禁失败是状态与产物矛盾，则将 `CONTEXT.md` 更新为 `blocked_by_inconsistent_state` / `fix-workspace`。
+
+## 产物事实源与状态快照
+
+阶段产物及其审核状态是工作流事实源，`CONTEXT.md` 是运行时生成的状态快照。任务是否已规格化、已实现或已测试，必须以对应产物存在且审核状态为 `已确认` 为准。
+
+`CONTEXT.md` 中除 `## 项目约束` 来自初始化输入并在重建时保留外，其余摘要和状态信息均应由运行时根据阶段产物生成。`## 需求概要` 的权威来源是 `output/analysis.md` 的 `## 需求概要`；需求分析能力不得直接维护 `CONTEXT.md` 中的需求概要。
+
+| 事实 | 权威来源 |
+|---|---|
+| 需求分析是否可进入设计 | `output/analysis.md` 存在，且审核状态为 `已确认` |
+| 技术方案是否可进入规格 | `output/design.md` 存在，且审核状态为 `已确认` |
+| 任务是否有规格 | `output/specs/T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已实现 | `output/report-T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已测试 | `output/test-report-T-XXX.md` 存在，且审核状态为 `已确认` |
+| 是否停在审核阶段 | 存在任一审核状态为 `待审核` 或 `需修改` 的阶段产物 |
+
+当 `CONTEXT.md` 与产物事实冲突时，以产物事实为准。运行时应进入 `blocked_by_inconsistent_state` / `fix-workspace`，并优先执行 `rebuild_context.py` 重建 `CONTEXT.md`。重建后必须再次运行 `tools/validate.py`，仍失败时不得继续阶段能力。
+
+`rebuild_context.py` 允许根据阶段产物重建 `CONTEXT.md`，但必须保留 `## 项目约束`。它不得修改 `output/` 阶段产物、`ISSUES.md`、`REVISIONS.md` 或代码仓库。通过 `wf` 触发重建时，`wf` 必须在脚本成功后追加 `JOURNAL.md`。
 
 ## 问题处理
 
@@ -92,6 +159,7 @@
 
 - 阶段保持为生成前的活动状态。
 - 下一步写为 `review-artifact`。
+- `待处理产物` 列出全部审核状态为 `待审核` 或 `需修改` 的阶段产物。
 - 不产生 `analysis_completed`、`design_completed`、`specs_generated`、`task_implemented` 或 `tests_generated`。
 
 用户可以通过两种方式完成审核：
@@ -125,14 +193,16 @@
 - 用户提出修改意见时，写入 `REVISIONS.md` 并执行修订收敛。
 - 用户没有给出确认或修订时，输出待审核产物清单和下一步提示，不落盘。
 
-任何扫描或事件处理结束后，如果仍存在审核状态为 `待审核` 或 `需修改` 的阶段产物，`CONTEXT.md` 下一步必须保持 `review-artifact`，不得写为下游能力。
+当待处理产物超过一个且用户没有明确目标产物时，运行时必须先询问目标，不得猜测。
 
-`task_implemented` 后，运行时必须扫描 `CONTEXT.md` 规格索引和 `output/report-T-XXX.md`：
+任何扫描或事件处理结束后，如果仍存在审核状态为 `待审核` 或 `需修改` 的阶段产物，`CONTEXT.md` 下一步必须保持 `review-artifact`，`待处理产物` 必须列出全部目标，不得写为下游能力。
+
+`task_implemented` 后，运行时必须按产物事实扫描任务和 `output/report-T-XXX.md`：
 
 - 如果所有真实任务均已完成，且对应报告存在并已确认，产生 `all_tasks_implemented`。
 - 否则保持 `implementation_in_progress`，下一步根据剩余未实现任务或未测试任务写为 `implement-code` 或 `generate-tests`。
 
-`tests_generated` 后，运行时必须扫描 `CONTEXT.md` 测试记录和 `output/test-report-T-XXX.md`：
+`tests_generated` 后，运行时必须按产物事实扫描测试记录和 `output/test-report-T-XXX.md`：
 
 - 如果所有真实任务均已实现且均已测试，对应报告和测试报告均存在并已确认，产生 `all_tests_completed`。
 - 如果所有真实任务均已实现，但仍有未测试任务，保持 `implementation_done`，下一步继续 `generate-tests`。

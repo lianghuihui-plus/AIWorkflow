@@ -29,6 +29,11 @@
 | `wf/guards.md` | 执行前门禁 |
 | `wf/capabilities/` | 阶段能力契约 |
 | `wf/contracts/` | 产物格式契约，包含 `REVISIONS.md` 修订契约和审核状态契约 |
+| `wf/tools/validate.py` | `wf` 内置校验器，用于状态改变前的确定性硬门禁 |
+| `wf/tools/rebuild_context.py` | 根据阶段产物事实重建 `CONTEXT.md` 状态快照 |
+| `wf-status/tools/validate.py` | `wf-status` 内置校验器，用于只读健康检查 |
+| `tools/validator_source/validate.py` | 校验器维护源，通过同步脚本复制到各 skill 目录 |
+| `scripts/sync_validator_tools.py` | 同步校验器到 `wf/` 和 `wf-status/` skill 目录 |
 | `wf-init/SKILL.md` | 工作空间初始化入口 |
 | `wf-init/templates/` | 工作空间初始化模板 |
 
@@ -58,11 +63,25 @@
 
 | 文件 | 职责 | 写入时机 |
 |------|------|---------|
-| `CONTEXT.md` | 需求概要、当前阶段、下一步、代码产出、测试记录 | 阶段推进时更新 |
+| `CONTEXT.md` | 需求概要、当前阶段、下一步、待处理产物、代码产出、测试记录 | 阶段推进或状态快照重建时更新 |
 | `ISSUES.md` | 待人工决策的问题，按阶段分组 | 发现问题时写入 |
 | `REVISIONS.md` | 用户主动提出的产物修订意见 | 用户通过对话或文件提出修订时写入 |
 | `JOURNAL.md` | 工作进度日志 | 每完成一个操作追加 |
 | `CHANGELOG.md` | 已解决决策归档 | 问题解决时追加 |
+
+### 运行时一致性
+
+阶段产物及其审核状态是工作流事实源，`CONTEXT.md` 是运行时生成的状态快照。任务是否有规格、是否已实现、是否已测试，分别以对应规格、代码报告、测试报告存在且审核状态为 `已确认` 为准。
+
+`validate.py` 负责确定性结构检查和动作硬门禁；`rebuild_context.py` 只根据产物事实重建 `CONTEXT.md`，不得修改 `output/` 阶段产物、`ISSUES.md`、`REVISIONS.md` 或代码仓库。
+
+`wf` 和 `wf-status` 各自使用 skill 目录内的 `tools/validate.py`。维护时只修改 `tools/validator_source/validate.py`，再执行：
+
+```text
+python scripts/sync_validator_tools.py
+```
+
+同步到两个 skill 目录，避免校验规则分叉。
 
 ### 工作规范
 
