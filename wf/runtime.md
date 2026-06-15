@@ -53,7 +53,7 @@
 | `design-solution` | `capabilities/design-solution.md`、`contracts/design.md`、`contracts/review-status.md`、`output/analysis.md`、必要代码仓库结构 |
 | `generate-specs` | `capabilities/generate-specs.md`、`contracts/spec.md`、`contracts/review-status.md`、`output/analysis.md`、`output/design.md`、必要代码仓库结构 |
 | `implement-code` | `capabilities/implement-code.md`、`contracts/spec.md`、`contracts/code-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、`output/design.md` 中对应任务、`output/analysis.md` 中关联需求、相关源码 |
-| `generate-tests` | `capabilities/generate-tests.md`、`contracts/test-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、目标 `output/report-T-XXX.md`、相关源码、已有测试模式 |
+| `generate-tests` | `capabilities/generate-tests.md`、`contracts/test-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、目标 `output/reports/T-XXX.md`、相关源码、已有测试模式 |
 | `review-artifact` | 目标产物、目标产物对应契约、`contracts/review-status.md`、必要时读取 `state-machine.md` |
 | `resolve-decision` | `ISSUES.md` 中目标 `Q-XXX`、`contracts/issues.md`、`contracts/changelog.md`、目标问题影响的产物 |
 | 修订收敛 | `REVISIONS.md` 中目标 `R-XXX`、`contracts/revisions.md`、目标产物契约、`contracts/review-status.md`、目标产物、受影响下游产物 |
@@ -89,6 +89,17 @@
 
 如果门禁失败是缺少必要输入或工作空间文件，则将 `CONTEXT.md` 更新为 `blocked_by_missing_input` / `fix-workspace`。如果门禁失败是状态与产物矛盾，则将 `CONTEXT.md` 更新为 `blocked_by_inconsistent_state` / `fix-workspace`。
 
+## 有序写入规则
+
+所有工作流文件都必须保持稳定的结构顺序，禁止为了“追加”把新条目直接插到章节顶部或插入到标题和既有内容之间。
+
+- 编号型条目按编号升序排列：`PRD-XX`、`REQ-XXX`、`Q-XXX`、`R-XXX`、`T-XXX`、修改点序号、偏离序号。
+- 分章节编号文件在目标章节内按编号升序排列；新编号仍从全文件最大编号递增。
+- 日期归档文件按 `YYYY-MM-DD` 日期章节升序排列；同一天只保留一个日期章节；同日新条目追加到该日期章节末尾。
+- 表格和清单更新时保持原有表头位置不变，只改对应行或按编号顺序插入新行。
+- `暂无` 只用于空章节或空列表；同一章节出现真实条目时必须删除 `暂无`。
+- 运行时重建类文件优先使用 `rebuild_context.py` 等确定性工具生成，避免手工局部插入导致顺序漂移。
+
 ## 产物事实源与状态快照
 
 阶段产物及其审核状态是工作流事实源，`CONTEXT.md` 是运行时生成的状态快照。任务是否已规格化、已实现或已测试，必须以对应产物存在且审核状态为 `已确认` 为准。
@@ -100,8 +111,8 @@
 | 需求分析是否可进入设计 | `output/analysis.md` 存在，且审核状态为 `已确认` |
 | 技术方案是否可进入规格 | `output/design.md` 存在，且审核状态为 `已确认` |
 | 任务是否有规格 | `output/specs/T-XXX.md` 存在，且审核状态为 `已确认` |
-| 任务是否已实现 | `output/report-T-XXX.md` 存在，且审核状态为 `已确认` |
-| 任务是否已测试 | `output/test-report-T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已实现 | `output/reports/T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已测试 | `output/test-reports/T-XXX.md` 存在，且审核状态为 `已确认` |
 | 是否停在审核阶段 | 存在任一审核状态为 `待审核` 或 `需修改` 的阶段产物 |
 
 当 `CONTEXT.md` 与产物事实冲突时，以产物事实为准。运行时应进入 `blocked_by_inconsistent_state` / `fix-workspace`，并优先执行 `rebuild_context.py` 重建 `CONTEXT.md`。重建后必须再次运行 `tools/validate.py`，仍失败时不得继续阶段能力。
@@ -123,6 +134,8 @@
 
 当用户对 `Q-XXX` 给出决策后，运行时负责执行决策、归档到 `CHANGELOG.md`、从 `ISSUES.md` 删除该问题，并追加 `JOURNAL.md`。
 
+写入 `ISSUES.md` 时，新问题必须放入对应阶段章节，并按 `Q-XXX` 升序插入；有问题条目时删除该阶段的 `暂无` 占位。处理完成归档到 `CHANGELOG.md` 时，必须复用或创建正确日期章节，不得直接插到文件顶部。
+
 处理决策前必须确认：
 
 - `Q-XXX` 在 `ISSUES.md` 中存在且编号唯一。
@@ -142,6 +155,8 @@
 3. 判断并同步受影响的下游产物；不能安全同步时写入 `ISSUES.md`。
 4. 将修订条目从 `## 待处理` 移动到 `## 已处理`，状态改为 `已处理`，补充处理结果、更新产物和处理时间。
 5. 追加 `JOURNAL.md`。
+
+写入和归档修订时必须遵守 `contracts/revisions.md` 的结构约束：`## 待处理` 和 `## 已处理` 内分别按 `R-XXX` 升序排列；新增修订写入待处理区的正确编号位置；处理完成的修订移动到已处理区的正确编号位置；有条目时删除该章节的 `暂无` 占位。
 
 如果修订无法处理：
 
@@ -178,8 +193,8 @@
 - `output/analysis.md` 已确认 → `analysis_completed`
 - `output/design.md` 已确认 → `design_completed`
 - `output/design.md` 中每个任务都有对应 `output/specs/T-XXX.md`，且全部规格已确认 → `specs_generated`
-- `output/report-T-XXX.md` 已确认 → 先更新 `CONTEXT.md` 的 `## 代码产出`，再产生 `task_implemented`
-- `output/test-report-T-XXX.md` 已确认 → 先更新 `CONTEXT.md` 的 `## 测试记录`，再产生 `tests_generated`
+- `output/reports/T-XXX.md` 已确认 → 先更新 `CONTEXT.md` 的 `## 代码产出`，再产生 `task_implemented`
+- `output/test-reports/T-XXX.md` 已确认 → 先更新 `CONTEXT.md` 的 `## 测试记录`，再产生 `tests_generated`
 
 ## `CONTEXT.md` 更新
 
@@ -197,12 +212,12 @@
 
 任何扫描或事件处理结束后，如果仍存在审核状态为 `待审核` 或 `需修改` 的阶段产物，`CONTEXT.md` 下一步必须保持 `review-artifact`，`待处理产物` 必须列出全部目标，不得写为下游能力。
 
-`task_implemented` 后，运行时必须按产物事实扫描任务和 `output/report-T-XXX.md`：
+`task_implemented` 后，运行时必须按产物事实扫描任务和 `output/reports/T-XXX.md`：
 
 - 如果所有真实任务均已完成，且对应报告存在并已确认，产生 `all_tasks_implemented`。
 - 否则保持 `implementation_in_progress`，下一步根据剩余未实现任务或未测试任务写为 `implement-code` 或 `generate-tests`。
 
-`tests_generated` 后，运行时必须按产物事实扫描测试记录和 `output/test-report-T-XXX.md`：
+`tests_generated` 后，运行时必须按产物事实扫描测试记录和 `output/test-reports/T-XXX.md`：
 
 - 如果所有真实任务均已实现且均已测试，对应报告和测试报告均存在并已确认，产生 `all_tests_completed`。
 - 如果所有真实任务均已实现，但仍有未测试任务，保持 `implementation_done`，下一步继续 `generate-tests`。
@@ -217,6 +232,8 @@
 - 创建或修改的文件和产物
 - 新增或解决的问题数量
 - 下一步建议
+
+日志写入必须遵守 `contracts/journal.md` 的日期归档约束：日期章节按 `YYYY-MM-DD` 升序排列；当天已有日期标题时复用并追加到该章节末尾；当天没有日期标题时只在文件末尾新增日期章节；不得在旧日期标题和其日志之间插入新日期标题。
 
 ## `CHANGELOG.md` 更新
 

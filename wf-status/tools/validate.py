@@ -45,6 +45,18 @@ REVIEW_RE = re.compile(r"^- 状态：(.+?)\s*$", re.MULTILINE)
 TASK_RE = re.compile(r"\bT-\d{3}\b")
 Q_RE = re.compile(r"\bQ-\d{3}\b")
 R_RE = re.compile(r"\bR-\d{3}\b")
+REQ_RE = re.compile(r"\bREQ-\d{3}\b")
+PRD_RE = re.compile(r"\bPRD-\d{2}\b")
+ISSUE_HEADING_RE = re.compile(r"(?m)^### (Q-\d{3})\b.*$")
+REVISION_HEADING_RE = re.compile(r"(?m)^### (R-\d{3})\b.*$")
+REQ_DETAIL_HEADING_RE = re.compile(r"(?m)^#### (REQ-\d{3})\b.*$")
+TASK_DETAIL_HEADING_RE = re.compile(r"(?m)^### (T-\d{3})\b.*$")
+SPEC_CHANGE_HEADING_RE = re.compile(r"(?m)^### 修改点 (\d+)：")
+DEVIATION_HEADING_RE = re.compile(r"(?m)^### 偏离 (\d+)\b")
+JOURNAL_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
+JOURNAL_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
+DATE_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
+TIME_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
 
 
 @dataclass
@@ -121,11 +133,50 @@ def parse_table_tasks(text: str, heading: str) -> dict[str, str]:
     return result
 
 
+def table_task_ids(text: str, heading: str) -> list[str]:
+    body = section(text, heading)
+    ids: list[str] = []
+    for line in body.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and TASK_RE.fullmatch(cells[0]):
+            ids.append(cells[0])
+    return ids
+
+
+def table_column_values(text: str, heading: str, column_index: int) -> list[str]:
+    body = section(text, heading)
+    values: list[str] = []
+    for line in body.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) <= column_index:
+            continue
+        if cells[0] in {"ID", "任务", "#"} or set(cells[0]) <= {"-", " "}:
+            continue
+        values.append(cells[column_index])
+    return values
+
+
+def table_number_values(text: str, heading: str) -> list[str]:
+    return [value for value in table_column_values(text, heading, 0) if value.isdigit()]
+
+
 def review_status(path: Path) -> str | None:
     if not path.exists():
         return None
     match = REVIEW_RE.search(read_text(path))
     return match.group(1).strip() if match else None
+
+
+def report_path(root: Path, task_id: str) -> Path:
+    return root / "output" / "reports" / f"{task_id}.md"
+
+
+def test_report_path(root: Path, task_id: str) -> Path:
+    return root / "output" / "test-reports" / f"{task_id}.md"
 
 
 def stage_artifacts(root: Path) -> list[Path]:
@@ -135,8 +186,8 @@ def stage_artifacts(root: Path) -> list[Path]:
         output / "design.md",
     ]
     paths.extend(sorted((output / "specs").glob("T-*.md")))
-    paths.extend(sorted(output.glob("report-T-*.md")))
-    paths.extend(sorted(output.glob("test-report-T-*.md")))
+    paths.extend(sorted((output / "reports").glob("T-*.md")))
+    paths.extend(sorted((output / "test-reports").glob("T-*.md")))
     return [path for path in paths if path.exists()]
 
 
@@ -176,6 +227,332 @@ def duplicate_ids(path: Path, pattern: re.Pattern[str]) -> list[str]:
     return sorted(duplicates)
 
 
+def id_number(item: str) -> int:
+    return int(item.split("-", 1)[1])
+
+
+def numeric_value(item: str) -> int:
+    return int(item)
+
+
+def section_has_placeholder_with_entries(text: str, heading: str, entry_pattern: re.Pattern[str]) -> bool:
+    body = section(text, heading)
+    return bool(entry_pattern.search(body) and re.search(r"(?m)^暂无\s*$", body))
+
+
+def section_has_none_with_entries(text: str, heading: str, entry_pattern: re.Pattern[str]) -> bool:
+    body = section(text, heading)
+    return bool(entry_pattern.search(body) and re.search(r"(?m)^无\s*$", body))
+
+
+def section_has_none_with_list_items(text: str, heading: str) -> bool:
+    body = section(text, heading)
+    return bool(re.search(r"(?m)^-\s+", body) and re.search(r"(?m)^无\s*$", body))
+
+
+def ordered_ids(path: Path, heading: str, pattern: re.Pattern[str]) -> list[str]:
+    if not path.exists():
+        return []
+    return pattern.findall(section(read_text(path), heading))
+
+
+def validate_ordered_items(
+    issues: list[Issue],
+    ids: list[str],
+    file: str,
+    typ: str,
+    message: str,
+    suggestion: str,
+    *,
+    level: str = "fail",
+) -> None:
+    if ids != sorted(ids, key=id_number):
+        add(issues, level, typ, file, message, suggestion)
+
+
+def validate_ordered_numbers(
+    issues: list[Issue],
+    ids: list[str],
+    file: str,
+    typ: str,
+    message: str,
+    suggestion: str,
+    *,
+    level: str = "fail",
+) -> None:
+    if ids != sorted(ids, key=numeric_value):
+        add(issues, level, typ, file, message, suggestion)
+
+
+def validate_date_archive(
+    path: Path,
+    root: Path,
+    issues: list[Issue],
+    *,
+    name: str,
+    empty_section_level: str = "warn",
+) -> None:
+    if not path.exists():
+        return
+    dates: list[str] = []
+    current_date = ""
+    entries_by_date: dict[str, list[tuple[int, int]]] = {}
+    unexpected_entries = False
+    for line in read_text(path).splitlines():
+        date_match = DATE_HEADING_RE.match(line)
+        if date_match:
+            current_date = date_match.group(1)
+            dates.append(current_date)
+            entries_by_date.setdefault(current_date, [])
+            continue
+        entry_match = TIME_ENTRY_RE.match(line)
+        if entry_match:
+            if not current_date:
+                unexpected_entries = True
+                continue
+            entries_by_date.setdefault(current_date, []).append((int(entry_match.group(1)), int(entry_match.group(2))))
+    file = rel(path, root)
+    if unexpected_entries:
+        add(
+            issues,
+            "fail",
+            f"{name}_entry_without_date",
+            file,
+            "存在未归属到日期标题下的归档条目",
+            "将每条 ### HH:MM 归档放到对应 ## YYYY-MM-DD 日期章节下",
+        )
+    if len(dates) != len(set(dates)):
+        add(
+            issues,
+            "fail",
+            f"{name}_duplicate_date",
+            file,
+            "日期章节重复",
+            "合并同一天的归档到唯一日期章节",
+        )
+    if dates != sorted(dates):
+        add(
+            issues,
+            "fail",
+            f"{name}_date_order_invalid",
+            file,
+            "日期章节必须按 YYYY-MM-DD 升序排列",
+            "新日期只能追加到文件末尾；已有日期只在该日期章节内追加",
+        )
+    for date, entries in entries_by_date.items():
+        if not entries:
+            add(
+                issues,
+                empty_section_level,
+                f"{name}_empty_date_section",
+                file,
+                f"{date} 日期章节没有任何条目",
+                "不要在已有日期标题和其日志之间插入新日期；将空日期章节删除或补回对应条目",
+            )
+        if entries != sorted(entries):
+            add(
+                issues,
+                "warn",
+                f"{name}_time_order_invalid",
+                file,
+                f"{date} 日期章节内条目时间不是升序",
+                "同一天的新条目应追加到该日期章节末尾",
+            )
+
+
+def validate_revisions_structure(root: Path, issues: list[Issue]) -> None:
+    path = root / "REVISIONS.md"
+    if not path.exists():
+        return
+    for heading in ["待处理", "已处理"]:
+        ids = ordered_ids(path, heading, REVISION_HEADING_RE)
+        validate_ordered_items(
+            issues,
+            ids,
+            "REVISIONS.md",
+            "revision_order_invalid",
+            f"{heading} 修订条目必须按 R-XXX 升序排列",
+            "按修订编号升序整理该章节，新增条目追加到正确编号位置",
+        )
+        if section_has_placeholder_with_entries(read_text(path), heading, REVISION_HEADING_RE):
+            add(
+                issues,
+                "fail",
+                "revision_placeholder_with_entries",
+                "REVISIONS.md",
+                f"{heading} 同时存在修订条目和“暂无”占位",
+                "有条目时删除“暂无”；无条目时保留单独的“暂无”",
+            )
+
+
+def validate_journal_structure(root: Path, issues: list[Issue]) -> None:
+    validate_date_archive(root / "JOURNAL.md", root, issues, name="journal", empty_section_level="fail")
+
+
+def validate_issues_structure(root: Path, issues: list[Issue]) -> None:
+    path = root / "ISSUES.md"
+    if not path.exists():
+        return
+    text = read_text(path)
+    for heading in ["分析阶段", "设计阶段", "实现阶段", "测试阶段"]:
+        ids = ordered_ids(path, heading, ISSUE_HEADING_RE)
+        validate_ordered_items(
+            issues,
+            ids,
+            "ISSUES.md",
+            "issue_order_invalid",
+            f"{heading} 问题条目必须按 Q-XXX 升序排列",
+            "新问题写入对应阶段中按编号升序的正确位置",
+        )
+        if section_has_placeholder_with_entries(text, heading, ISSUE_HEADING_RE):
+            add(
+                issues,
+                "fail",
+                "issue_placeholder_with_entries",
+                "ISSUES.md",
+                f"{heading} 同时存在问题条目和“暂无”占位",
+                "有问题条目时删除“暂无”；无条目时保留单独的“暂无”",
+            )
+
+
+def validate_changelog_structure(root: Path, issues: list[Issue]) -> None:
+    validate_date_archive(root / "CHANGELOG.md", root, issues, name="changelog", empty_section_level="warn")
+
+
+def validate_analysis_structure(root: Path, issues: list[Issue]) -> None:
+    path = root / "output" / "analysis.md"
+    if not path.exists():
+        return
+    text = read_text(path)
+    file = rel(path, root)
+    table_ids = [match.group(0) for value in table_column_values(text, "功能需求", 0) if (match := REQ_RE.fullmatch(value))]
+    detail_ids = REQ_DETAIL_HEADING_RE.findall(section(text, "功能需求"))
+    validate_ordered_items(
+        issues,
+        table_ids,
+        file,
+        "analysis_requirement_table_order_invalid",
+        "需求纳入决策表必须按 REQ-XXX 升序排列",
+        "新增需求行按编号插入，不要插到表格顶部",
+        level="warn",
+    )
+    validate_ordered_items(
+        issues,
+        detail_ids,
+        file,
+        "analysis_requirement_detail_order_invalid",
+        "需求详情必须按 REQ-XXX 升序排列",
+        "新增需求详情按编号插入，不要插到详情顶部",
+        level="warn",
+    )
+    prd_ids = [match.group(0) for value in table_column_values(text, "文件清单", 0) if (match := PRD_RE.fullmatch(value))]
+    validate_ordered_items(
+        issues,
+        prd_ids,
+        file,
+        "analysis_prd_file_order_invalid",
+        "PRD 文件清单必须按 PRD-XX 升序排列",
+        "按文件名顺序分配 PRD 编号，并按编号升序列出",
+        level="warn",
+    )
+
+
+def validate_design_structure(root: Path, issues: list[Issue]) -> None:
+    path = root / "output" / "design.md"
+    if not path.exists():
+        return
+    text = read_text(path)
+    file = rel(path, root)
+    table_ids = [match.group(0) for value in table_column_values(text, "任务总览", 0) if (match := TASK_RE.fullmatch(value))]
+    detail_ids = TASK_DETAIL_HEADING_RE.findall(section(text, "任务详情"))
+    validate_ordered_items(
+        issues,
+        table_ids,
+        file,
+        "design_task_table_order_invalid",
+        "任务总览必须按 T-XXX 升序排列",
+        "新增任务行按编号插入，不要插到表格顶部",
+        level="warn",
+    )
+    validate_ordered_items(
+        issues,
+        detail_ids,
+        file,
+        "design_task_detail_order_invalid",
+        "任务详情必须按 T-XXX 升序排列",
+        "新增任务详情按编号插入，不要插到详情顶部",
+        level="warn",
+    )
+
+
+def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
+    validate_analysis_structure(root, issues)
+    validate_design_structure(root, issues)
+    for spec in sorted((root / "output" / "specs").glob("T-*.md")):
+        ids = SPEC_CHANGE_HEADING_RE.findall(read_text(spec))
+        validate_ordered_numbers(
+            issues,
+            ids,
+            rel(spec, root),
+            "spec_change_order_invalid",
+            "规格修改点必须按序号升序排列",
+            "新增修改点追加到末尾并使用下一个序号",
+            level="warn",
+        )
+    for report in sorted((root / "output" / "reports").glob("T-*.md")):
+        text = read_text(report)
+        ids = DEVIATION_HEADING_RE.findall(text)
+        change_ids = table_number_values(text, "修改清单")
+        validate_ordered_numbers(
+            issues,
+            change_ids,
+            rel(report, root),
+            "code_report_change_list_order_invalid",
+            "修改清单序号必须按升序排列",
+            "新增修改记录追加到表格末尾并使用下一个序号",
+            level="warn",
+        )
+        validate_ordered_numbers(
+            issues,
+            ids,
+            rel(report, root),
+            "code_report_deviation_order_invalid",
+            "偏离条目必须按序号升序排列",
+            "新增偏离追加到末尾并使用下一个序号",
+            level="warn",
+        )
+        if section_has_none_with_entries(text, "偏离说明", DEVIATION_HEADING_RE):
+            add(
+                issues,
+                "fail",
+                "code_report_deviation_none_with_entries",
+                rel(report, root),
+                "偏离说明同时存在“无”和偏离条目",
+                "无偏离时只写“无”；存在偏离条目时删除“无”",
+            )
+    for report in sorted((root / "output" / "test-reports").glob("T-*.md")):
+        text = read_text(report)
+        test_ids = table_number_values(text, "测试清单")
+        validate_ordered_numbers(
+            issues,
+            test_ids,
+            rel(report, root),
+            "test_report_case_order_invalid",
+            "测试清单序号必须按升序排列",
+            "新增测试用例追加到表格末尾并使用下一个序号",
+            level="warn",
+        )
+        if section_has_none_with_list_items(text, "未覆盖行为"):
+            add(
+                issues,
+                "fail",
+                "test_report_uncovered_none_with_entries",
+                rel(report, root),
+                "未覆盖行为同时存在“无”和列表条目",
+                "全部覆盖时只写“无”；存在未覆盖行为时删除“无”",
+            )
+
+
 def add(issue_list: list[Issue], level: str, typ: str, file: str, message: str, suggestion: str = "") -> None:
     issue_list.append(Issue(level, typ, file, message, suggestion))
 
@@ -208,7 +585,7 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
     for item in required:
         if not (root / item).exists():
             add(issues, "fail", "missing_workspace_file", item, f"缺少 {item}", "补齐工作空间文件后重新执行 wf")
-    for item in ["prd", "output"]:
+    for item in ["prd", "output", "output/specs", "output/reports", "output/test-reports"]:
         if not (root / item).is_dir():
             add(issues, "fail", "missing_workspace_dir", item, f"缺少 {item}/", "补齐工作空间目录后重新执行 wf")
 
@@ -252,6 +629,33 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
                     "存在待处理产物时下一步必须为 review-artifact",
                     "执行 rebuild-context 重建状态快照",
                 )
+        spec_ids = [item.split(" ", 1)[0] for item in parse_list_block(context, "规格") if TASK_RE.match(item)]
+        validate_ordered_items(
+            issues,
+            spec_ids,
+            "CONTEXT.md",
+            "context_spec_order_invalid",
+            "CONTEXT.md 规格索引必须按 T-XXX 升序排列",
+            "执行 rebuild-context 重建状态快照",
+        )
+        code_ids = table_task_ids(context, "代码产出")
+        validate_ordered_items(
+            issues,
+            code_ids,
+            "CONTEXT.md",
+            "context_code_output_order_invalid",
+            "CONTEXT.md 代码产出表必须按 T-XXX 升序排列",
+            "执行 rebuild-context 重建状态快照",
+        )
+        test_ids = table_task_ids(context, "测试记录")
+        validate_ordered_items(
+            issues,
+            test_ids,
+            "CONTEXT.md",
+            "context_test_record_order_invalid",
+            "CONTEXT.md 测试记录表必须按 T-XXX 升序排列",
+            "执行 rebuild-context 重建状态快照",
+        )
 
     for artifact in stage_artifacts(root):
         status = review_status(artifact)
@@ -265,6 +669,11 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
         add(issues, "fail", "duplicate_issue_id", "ISSUES.md", f"问题编号重复：{dup}")
     for dup in duplicate_ids(root / "REVISIONS.md", R_RE):
         add(issues, "fail", "duplicate_revision_id", "REVISIONS.md", f"修订编号重复：{dup}")
+    validate_issues_structure(root, issues)
+    validate_revisions_structure(root, issues)
+    validate_journal_structure(root, issues)
+    validate_changelog_structure(root, issues)
+    validate_stage_artifact_structure(root, issues)
 
     tasks = parse_design_tasks(root)
     for task_id in tasks:
@@ -275,7 +684,7 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
     context_done = parse_table_tasks(context, "代码产出")
     for task_id, value in context_done.items():
         if "已完成" in value:
-            report = root / "output" / f"report-{task_id}.md"
+            report = report_path(root, task_id)
             if review_status(report) != "已确认":
                 add(
                     issues,
@@ -289,7 +698,7 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
     context_tested = parse_table_tasks(context, "测试记录")
     for task_id, value in context_tested.items():
         if "已完成" in value:
-            test_report = root / "output" / f"test-report-{task_id}.md"
+            test_report = test_report_path(root, task_id)
             if review_status(test_report) != "已确认":
                 add(
                     issues,
@@ -352,8 +761,8 @@ def validate_action(root: Path, action: str, issues: list[Issue], context: str, 
             add(issues, "fail", "missing_code_repo", "CONTEXT.md", "代码仓库路径缺失或不可访问")
         implemented = []
         for task_id in parse_design_tasks(root):
-            report = output / f"report-{task_id}.md"
-            test_report = output / f"test-report-{task_id}.md"
+            report = report_path(root, task_id)
+            test_report = test_report_path(root, task_id)
             if review_status(report) == "已确认" and review_status(test_report) != "已确认":
                 implemented.append(task_id)
         if not implemented:

@@ -95,8 +95,8 @@
 | 需求分析是否可进入设计 | `output/analysis.md` 存在，且审核状态为 `已确认` |
 | 技术方案是否可进入规格 | `output/design.md` 存在，且审核状态为 `已确认` |
 | 任务是否有规格 | `output/specs/T-XXX.md` 存在，且审核状态为 `已确认` |
-| 任务是否已实现 | `output/report-T-XXX.md` 存在，且审核状态为 `已确认` |
-| 任务是否已测试 | `output/test-report-T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已实现 | `output/reports/T-XXX.md` 存在，且审核状态为 `已确认` |
+| 任务是否已测试 | `output/test-reports/T-XXX.md` 存在，且审核状态为 `已确认` |
 | 是否停在审核阶段 | 存在任一审核状态为 `待审核` 或 `需修改` 的阶段产物 |
 
 当 `CONTEXT.md` 与产物事实冲突时，应进入 `blocked_by_inconsistent_state` / `fix-workspace`，并通过 `rebuild_context.py` 按产物事实重建状态快照。
@@ -130,6 +130,7 @@
 - `T-XXX` 占位符不算真实任务。
 - 待处理产物只解析 `## 当前状态` 下的 `- 待处理产物：` 区域。
 - 规格索引只解析 `## 当前状态` 下的 `- 规格：` 区域。
+- 规格索引、代码产出表和测试记录表中的真实任务必须按 `T-XXX` 升序排列。
 - 规格索引中只有明确包含 `✅ 已实现` 的任务才视为已实现；`✅ 已确认` 只能表示规格已确认，不代表代码已实现。
 - 包含 `✅ 已测试` 的任务，只有对应测试报告存在且审核状态为 `已确认`，才视为已测试。
 
@@ -139,10 +140,11 @@
 - `## 需求概要` 由运行时或 `rebuild_context.py` 从 `output/analysis.md` 同步生成。
 - `## 项目约束` 由初始化写入，重建时保留原值。
 - 待处理产物只能由运行时或 `rebuild_context.py` 根据产物审核状态更新。
+- 规格索引、代码产出表和测试记录表只能由运行时或 `rebuild_context.py` 按任务编号升序更新。
 - 能力只生成或修订产物；完成事件只能由运行时在产物审核确认后产生。
 - 存在待审核或需修改产物时，`下一步` 必须为 `review-artifact`，不得写为下游能力。
 - 存在待审核或需修改产物时，`待处理产物` 必须列出全部目标；不存在时必须写 `暂无`。
-- 缺少 `output/report-T-XXX.md` 时，不得标记任务已实现。
-- 缺少 `output/test-report-T-XXX.md` 时，不得标记任务已测试。
-- `output/report-T-XXX.md` 审核状态不是 `已确认` 时，不得标记任务已实现。
-- `output/test-report-T-XXX.md` 审核状态不是 `已确认` 时，不得标记任务已测试。
+- 缺少 `output/reports/T-XXX.md` 时，不得标记任务已实现。
+- 缺少 `output/test-reports/T-XXX.md` 时，不得标记任务已测试。
+- `output/reports/T-XXX.md` 审核状态不是 `已确认` 时，不得标记任务已实现。
+- `output/test-reports/T-XXX.md` 审核状态不是 `已确认` 时，不得标记任务已测试。

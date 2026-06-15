@@ -21,7 +21,7 @@
 - `ISSUES.md` 存在；缺失时进入工作空间修复建议。
 - `REVISIONS.md` 存在；缺失时进入工作空间修复建议。
 - `JOURNAL.md` 和 `CHANGELOG.md` 存在；缺失时进入工作空间修复建议。
-- `prd/` 和 `output/` 存在。
+- `prd/`、`output/`、`output/specs/`、`output/reports/` 和 `output/test-reports/` 存在。
 - `CONTEXT.md` 中当前阶段和下一步可识别，下一步应使用运行时能力名称。
 - `CONTEXT.md` 包含 `待处理产物` 字段，且待处理产物列表与阶段产物审核状态一致。
 - `ISSUES.md` 中问题编号唯一。
@@ -39,7 +39,7 @@
 | `design-solution` | `output/analysis.md` 存在，且审核状态为 `已确认` |
 | `generate-specs` | `output/design.md` 和 `output/analysis.md` 存在，且二者审核状态均为 `已确认` |
 | `implement-code` | `CONTEXT.md` 中存在代码仓库路径，且路径非空、不是 `无`、可访问；`output/design.md` 中每个任务都有对应 `output/specs/T-XXX.md`，且所有目标规格审核状态均为 `已确认` |
-| `generate-tests` | `CONTEXT.md` 中存在代码仓库路径，且路径非空、不是 `无`、可访问；至少存在一个已实现但未测试的任务；对应 `output/specs/T-XXX.md` 和 `output/report-T-XXX.md` 存在，且规格和代码报告审核状态均为 `已确认` |
+| `generate-tests` | `CONTEXT.md` 中存在代码仓库路径，且路径非空、不是 `无`、可访问；至少存在一个已实现但未测试的任务；对应 `output/specs/T-XXX.md` 和 `output/reports/T-XXX.md` 存在，且规格和代码报告审核状态均为 `已确认` |
 | `review-artifact` | 存在至少一个阶段产物审核状态为 `待审核` 或 `需修改` |
 
 ## 决策处理门禁
@@ -61,10 +61,10 @@
 
 - 任务编号重复是 `fail`。
 - 规格索引中列出任务但缺少 `output/specs/T-XXX.md` 是 `warn`；当请求实现该任务时是 `fail`。
-- 任务标记已实现但缺少 `output/report-T-XXX.md` 是 `warn`；当测试依赖该任务时是 `fail`。
-- 任务标记已测试但缺少 `output/test-report-T-XXX.md` 是 `warn`。
-- 任务标记已实现但 `output/report-T-XXX.md` 审核状态不是 `已确认` 是 `warn`；当测试依赖该任务时是 `fail`。
-- 任务标记已测试但 `output/test-report-T-XXX.md` 审核状态不是 `已确认` 是 `warn`。
+- 任务标记已实现但缺少 `output/reports/T-XXX.md` 是 `warn`；当测试依赖该任务时是 `fail`。
+- 任务标记已测试但缺少 `output/test-reports/T-XXX.md` 是 `warn`。
+- 任务标记已实现但 `output/reports/T-XXX.md` 审核状态不是 `已确认` 是 `warn`；当测试依赖该任务时是 `fail`。
+- 任务标记已测试但 `output/test-reports/T-XXX.md` 审核状态不是 `已确认` 是 `warn`。
 
 ## 审核状态门禁
 

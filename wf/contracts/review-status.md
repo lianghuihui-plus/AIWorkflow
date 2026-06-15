@@ -7,8 +7,8 @@
 - `output/analysis.md`
 - `output/design.md`
 - `output/specs/T-XXX.md`
-- `output/report-T-XXX.md`
-- `output/test-report-T-XXX.md`
+- `output/reports/T-XXX.md`
+- `output/test-reports/T-XXX.md`
 
 ## 格式
 
@@ -43,5 +43,5 @@
 - `output/analysis.md` 未 `已确认` 时，不得执行 `design-solution`。
 - `output/design.md` 未 `已确认` 时，不得执行 `generate-specs`。
 - `output/specs/T-XXX.md` 未 `已确认` 时，不得执行对应任务的 `implement-code`。
-- `output/report-T-XXX.md` 未 `已确认` 时，不得执行对应任务的 `generate-tests`。
-- `output/test-report-T-XXX.md` 未 `已确认` 时，不得将对应任务标记为测试完成。
+- `output/reports/T-XXX.md` 未 `已确认` 时，不得执行对应任务的 `generate-tests`。
+- `output/test-reports/T-XXX.md` 未 `已确认` 时，不得将对应任务标记为测试完成。

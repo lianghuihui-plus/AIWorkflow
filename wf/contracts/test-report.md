@@ -1,8 +1,8 @@
-# 产物契约：output/test-report-T-XXX.md
+# 产物契约：output/test-reports/T-XXX.md
 
 ## 路径
 
-`output/test-report-T-XXX.md`
+`output/test-reports/T-XXX.md`
 
 ## 必需章节
 
@@ -28,6 +28,12 @@
 ```markdown
 - {行为} — {原因}
 ```
+
+## 编号规则
+
+- `测试清单` 表格序号从 1 开始递增，并按覆盖行为或规格行为的稳定顺序排列。
+- 新增测试用例时追加到表格末尾，并使用下一个序号；不要插到表格顶部。
+- `未覆盖行为` 使用列表追加；全部覆盖时只写 `无`，存在未覆盖行为时不得同时保留 `无`。
 
 ## 质量规则
 

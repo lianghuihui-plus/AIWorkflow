@@ -44,8 +44,8 @@ Agent 会读取 `AGENT.md`、`CONTEXT.md`、`ISSUES.md`、`REVISIONS.md` 和 `JO
 | `output/analysis.md` | 需求分析 |
 | `output/design.md` | 技术方案 |
 | `output/specs/T-XXX.md` | 开发规格 |
-| `output/report-T-XXX.md` | 代码生成报告 |
-| `output/test-report-T-XXX.md` | 测试报告 |
+| `output/reports/T-XXX.md` | 代码生成报告 |
+| `output/test-reports/T-XXX.md` | 测试报告 |
 
 ## 工作规范
 
@@ -57,13 +57,14 @@ Agent 会读取 `AGENT.md`、`CONTEXT.md`、`ISSUES.md`、`REVISIONS.md` 和 `JO
 
 | 场景 | 文件 | 写入位置 | 格式 |
 |---|---|---|---|
-| 发现问题需人工决策 | `ISSUES.md` | 对应阶段下追加 Q-XXX | 问题/AI建议/影响/提出/人工决策/状态 |
-| 用户提出产物修订 | `REVISIONS.md` | `## 待处理` 下追加 R-XXX | 目标产物/修订类型/用户意见/影响范围/状态 |
-| 问题已解决 | `CHANGELOG.md` | 文件末尾按日期追加 | 决策归档格式 |
+| 发现问题需人工决策 | `ISSUES.md` | 对应阶段下按 Q-XXX 升序插入 | 问题/AI建议/影响/提出/人工决策/状态 |
+| 用户提出产物修订 | `REVISIONS.md` | `## 待处理` 下按 R-XXX 升序插入 | 目标产物/修订类型/用户意见/影响范围/状态 |
+| 问题已解决 | `CHANGELOG.md` | 复用当天日期章节并追加；新日期只在文件末尾新增 | 决策归档格式 |
 | 阶段推进 | `CONTEXT.md` | `## 当前状态` 更新 | 阶段/下一步 |
-| 每完成一个操作 | `JOURNAL.md` | 文件末尾按日期追加 | HH:MM 时间戳 + 内容 |
+| 每完成一个操作 | `JOURNAL.md` | 复用当天日期章节并追加；新日期只在文件末尾新增 | HH:MM 时间戳 + 内容 |
+
+所有编号型条目必须保持升序；所有日期归档必须复用当天章节或在文件末尾创建新日期章节；有真实条目时删除同章节的 `暂无` 占位。
 
 ### 阶段推进
 
 阶段推进由 `wf` 根据运行时状态机统一处理。阶段能力不再作为独立 skill 暴露，而是由 `wf` 按需加载。
-

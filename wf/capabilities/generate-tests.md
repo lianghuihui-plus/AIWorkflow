@@ -8,21 +8,21 @@
 
 - 代码仓库路径非空、不是 `无`、可访问。
 - 目标 `output/specs/T-XXX.md` 存在。
-- 目标 `output/report-T-XXX.md` 存在。
+- 目标 `output/reports/T-XXX.md` 存在。
 - 目标任务已实现但尚未测试。
 
 ## 输入
 
 - `output/specs/T-XXX.md`：关键行为和修改点。
-- `output/report-T-XXX.md`：实际实现和偏离说明。
+- `output/reports/T-XXX.md`：实际实现和偏离说明。
 - 相关源码文件和已有测试模式。
 
 ## 输出
 
 - 写入代码仓库的测试代码。
-- 符合 `contracts/test-report.md` 的 `output/test-report-T-XXX.md`。
+- 符合 `contracts/test-report.md` 的 `output/test-reports/T-XXX.md`。
 - 审核状态：`待审核`。
-- 完成事件：用户确认 `output/test-report-T-XXX.md` 后，由运行时产生 `tests_generated` 或 `all_tests_completed`。
+- 完成事件：用户确认 `output/test-reports/T-XXX.md` 后，由运行时产生 `tests_generated` 或 `all_tests_completed`。
 - 可选：写入 `ISSUES.md` 的测试阶段问题。
 
 ## 规则
@@ -44,6 +44,6 @@
 ## 完成标准
 
 - 已写入测试文件，或有阻塞问题说明为什么停止。
-- `output/test-report-T-XXX.md` 已生成。
+- `output/test-reports/T-XXX.md` 已生成。
 - 报告将测试用例映射到关键行为，并列出未覆盖行为。
-- `output/test-report-T-XXX.md` 的审核状态为 `待审核`，等待用户确认后才能标记测试完成。
+- `output/test-reports/T-XXX.md` 的审核状态为 `待审核`，等待用户确认后才能标记测试完成。

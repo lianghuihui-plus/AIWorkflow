@@ -19,9 +19,9 @@
 ## 输出
 
 - 限定在任务范围内的代码仓库改动。
-- 符合 `contracts/code-report.md` 的 `output/report-T-XXX.md`。
+- 符合 `contracts/code-report.md` 的 `output/reports/T-XXX.md`。
 - 审核状态：`待审核`。
-- 完成事件：用户确认 `output/report-T-XXX.md` 后，由运行时产生 `task_implemented` 或 `all_tasks_implemented`。
+- 完成事件：用户确认 `output/reports/T-XXX.md` 后，由运行时产生 `task_implemented` 或 `all_tasks_implemented`。
 - 可选：写入 `ISSUES.md` 的实现阶段问题。
 
 ## 规则
@@ -45,6 +45,6 @@
 ## 完成标准
 
 - 任务代码已实现，或有阻塞问题说明为什么停止。
-- `output/report-T-XXX.md` 已生成。
+- `output/reports/T-XXX.md` 已生成。
 - 报告列出所有修改文件和偏离说明。
-- `output/report-T-XXX.md` 的审核状态为 `待审核`，等待用户确认后才能标记任务完成或进入测试生成。
+- `output/reports/T-XXX.md` 的审核状态为 `待审核`，等待用户确认后才能标记任务完成或进入测试生成。

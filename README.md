@@ -54,9 +54,12 @@
 └── output/
     ├── analysis.md     ← 结构化需求分析
     ├── design.md       ← 任务拆解 + 技术方案
-    ├── specs/          ← 逐文件编码指令
-    ├── report-T-XXX.md ← 代码生成报告
-    └── test-report-T-XXX.md ← 测试报告
+    ├── specs/          ← 开发规格
+    │   └── T-XXX.md
+    ├── reports/        ← 代码生成报告
+    │   └── T-XXX.md
+    └── test-reports/   ← 测试报告
+        └── T-XXX.md
 ```
 
 ### 文件职责
@@ -128,7 +131,7 @@ python scripts/sync_validator_tools.py
 
 **人工审核：**
 
-1. Agent 生成或修订 `output/analysis.md`、`output/design.md`、`output/specs/T-XXX.md`、`output/report-T-XXX.md` 或 `output/test-report-T-XXX.md` 后，产物状态为 `待审核`
+1. Agent 生成或修订 `output/analysis.md`、`output/design.md`、`output/specs/T-XXX.md`、`output/reports/T-XXX.md` 或 `output/test-reports/T-XXX.md` 后，产物状态为 `待审核`
 2. 此时 `CONTEXT.md` 的下一步为 `review-artifact`，不会重复执行生成能力
 3. 用户审核后，可以直接说“确认通过 analysis”或“这个规格需要修改”
 4. 确认通过时，Agent 先校验产物契约，再将产物审核状态改为 `已确认` 并推进状态机

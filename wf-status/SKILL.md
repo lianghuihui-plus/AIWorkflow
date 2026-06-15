@@ -97,7 +97,7 @@ python <wf-status-skill-dir>/tools/validate.py <workspace> --json
 - 下一步是 `design-solution`：`output/analysis.md` 应存在，且审核状态应为 `已确认`。
 - 下一步是 `generate-specs`：`output/design.md` 和 `output/analysis.md` 应存在，且审核状态均应为 `已确认`。
 - 下一步是 `implement-code`：`代码仓库` 必须非空、不能为 `无` 且路径可访问；`output/design.md` 中每个任务都应有对应 `output/specs/T-XXX.md`，且全部规格应已确认。
-- 下一步是 `generate-tests`：`代码仓库` 必须非空、不能为 `无` 且路径可访问；存在至少一个“已完成但未测试”的任务，且对应 `output/report-T-XXX.md` 应存在并已确认。
+- 下一步是 `generate-tests`：`代码仓库` 必须非空、不能为 `无` 且路径可访问；存在至少一个“已完成但未测试”的任务，且对应 `output/reports/T-XXX.md` 应存在并已确认。
 - 下一步是 `review-artifact`：至少存在一个阶段产物审核状态为 `待审核` 或 `需修改`。
 
 `PRD 文件` 缺失支持格式时始终作为工作空间完整性 ⚠️；只有下一步是 `analyze-requirements` 时，才视为阶段产物输入问题。
@@ -126,9 +126,9 @@ python <wf-status-skill-dir>/tools/validate.py <workspace> --json
 - `output/design.md` 中存在任务但对应规格审核状态不是 `已确认` → ⚠️；当下一步是 `implement-code` 时 → ❌。
 - `规格索引` 中没有任何 `T-XXX`，但下一步是 `implement-code` → ❌，建议先执行 `generate-specs` 或修正 `CONTEXT.md`。
 - `规格索引` 中不存在未完成任务，但下一步仍是 `implement-code` → ❌，建议更新下一步或选择实际待开发任务。
-- `代码产出` 中 `T-XXX` 状态为 `✅ 已完成` 但 `output/report-T-XXX.md` 缺失 → ⚠️。
-- `测试记录` 中 `T-XXX` 状态为 `✅ 已完成`，但 `output/test-report-T-XXX.md` 缺失 → ⚠️。
-- `规格索引` 中 `T-XXX` 标记为 `✅ 已测试` 时，只有该行同时包含对应任务号的 `output/test-report-<任务号>.md`（如 `T-001` 对应 `output/test-report-T-001.md`）才视为规格索引测试状态自洽；否则依赖 `## 测试记录` 表判断测试完成状态。
+- `代码产出` 中 `T-XXX` 状态为 `✅ 已完成` 但 `output/reports/T-XXX.md` 缺失 → ⚠️。
+- `测试记录` 中 `T-XXX` 状态为 `✅ 已完成`，但 `output/test-reports/T-XXX.md` 缺失 → ⚠️。
+- `规格索引` 中 `T-XXX` 标记为 `✅ 已测试` 时，只有该行同时包含对应任务号的 `output/test-reports/<任务号>.md`（如 `T-001` 对应 `output/test-reports/T-001.md`）才视为规格索引测试状态自洽；否则依赖 `## 测试记录` 表判断测试完成状态。
 - 判断是否有待测试任务时，使用 `代码产出` 中已完成任务减去 `测试记录` 中已完成任务；集合非空才建议执行 `generate-tests`。
 - 没有已完成但未测试任务，但下一步仍是 `generate-tests` → ⚠️；如果规格索引中至少存在一个 `T-XXX`，且全部任务均已标记 `✅ 已测试`，建议将阶段更新为 `tests_done`，下一步更新为 `status`。
 
@@ -141,14 +141,14 @@ python <wf-status-skill-dir>/tools/validate.py <workspace> --json
 - `output/analysis.md`
 - `output/design.md`
 - `output/specs/*.md`
-- `output/report-T-*.md`
-- `output/test-report-T-*.md`
+- `output/reports/T-*.md`
+- `output/test-reports/T-*.md`
 
 - 产物缺少 `## 审核状态` → ⚠️；如果该产物是下一步必要输入 → ❌。
 - 产物审核状态为 `待审核` → ⚠️，建议用户审核确认或提出修订；如果该产物是下一步必要输入 → ❌。
 - 产物审核状态为 `需修改` → ⚠️，建议执行 `wf` 收敛修订；如果该产物是下一步必要输入 → ❌。
 - 产物审核状态为 `已确认` → ✅。
-- `tests_done` 状态下，所有 `output/test-report-T-XXX.md` 都应为 `已确认`。
+- `tests_done` 状态下，所有 `output/test-reports/T-XXX.md` 都应为 `已确认`。
 - `下一步=review-artifact` 但没有待审核或需修改产物 → ❌，建议修正 `CONTEXT.md`。
 
 #### 问题编号规则

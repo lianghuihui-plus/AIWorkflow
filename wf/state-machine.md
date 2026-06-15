@@ -24,9 +24,9 @@
 | `analysis_completed` | 运行时在 `output/analysis.md` 审核确认后产生 |
 | `design_completed` | 运行时在 `output/design.md` 审核确认后产生 |
 | `specs_generated` | 运行时在所有目标规格审核确认后产生 |
-| `task_implemented` | 运行时在 `output/report-T-XXX.md` 审核确认后产生 |
+| `task_implemented` | 运行时在 `output/reports/T-XXX.md` 审核确认后产生 |
 | `all_tasks_implemented` | 运行时扫描任务后产生 |
-| `tests_generated` | 运行时在 `output/test-report-T-XXX.md` 审核确认后产生 |
+| `tests_generated` | 运行时在 `output/test-reports/T-XXX.md` 审核确认后产生 |
 | `all_tests_completed` | 运行时扫描测试记录后产生 |
 | `decision_required` | 任意能力 |
 | `decision_resolved` | 运行时处理人工决策 |
@@ -74,8 +74,8 @@
 | `output/analysis.md` | `initialized` | `review-artifact` |
 | `output/design.md` | `requirements_analyzed` | `review-artifact` |
 | `output/specs/T-XXX.md` | `design_ready` | `review-artifact` |
-| `output/report-T-XXX.md` | `specs_ready` 或 `implementation_in_progress` | `review-artifact` |
-| `output/test-report-T-XXX.md` | `implementation_in_progress` 或 `implementation_done` | `review-artifact` |
+| `output/reports/T-XXX.md` | `specs_ready` 或 `implementation_in_progress` | `review-artifact` |
+| `output/test-reports/T-XXX.md` | `implementation_in_progress` 或 `implementation_done` | `review-artifact` |
 
 用户确认目标产物后，运行时先校验产物契约；校验通过后将审核状态写为 `已确认`，再产生对应主流程事件。校验失败时不得确认：可修订问题写入 `REVISIONS.md` 并保持 `review-artifact`；需要人工决策的问题写入 `ISSUES.md` 并进入 `blocked_by_decision`。
 
@@ -93,8 +93,8 @@
 
 恢复活动状态时按以下优先级判断：
 
-1. 所有任务均已实现且均已测试，对应 `output/report-T-XXX.md` 和 `output/test-report-T-XXX.md` 审核状态均为 `已确认` → `tests_done`，下一步 `status`。
-2. 所有任务均已实现，且 `output/report-T-XXX.md` 审核状态均为 `已确认`，但仍有未测试任务 → `implementation_done`，下一步 `generate-tests`。
+1. 所有任务均已实现且均已测试，对应 `output/reports/T-XXX.md` 和 `output/test-reports/T-XXX.md` 审核状态均为 `已确认` → `tests_done`，下一步 `status`。
+2. 所有任务均已实现，且 `output/reports/T-XXX.md` 审核状态均为 `已确认`，但仍有未测试任务 → `implementation_done`，下一步 `generate-tests`。
 3. 存在已确认的实现报告，且仍有未实现或未测试任务 → `implementation_in_progress`，下一步 `implement-code` 或 `generate-tests`。
 4. `output/design.md` 中每个任务都有对应规格文件，且所有规格文件审核状态均为 `已确认` → `specs_ready`，下一步 `implement-code`。
 5. `output/design.md` 审核状态为 `已确认` → `design_ready`，下一步 `generate-specs`。

@@ -52,6 +52,14 @@ def rel(path: Path, root: Path) -> str:
         return str(path)
 
 
+def report_path(root: Path, task_id: str) -> Path:
+    return root / "output" / "reports" / f"{task_id}.md"
+
+
+def test_report_path(root: Path, task_id: str) -> Path:
+    return root / "output" / "test-reports" / f"{task_id}.md"
+
+
 def stage_artifacts(root: Path) -> list[Path]:
     output = root / "output"
     paths = [
@@ -59,8 +67,8 @@ def stage_artifacts(root: Path) -> list[Path]:
         output / "design.md",
     ]
     paths.extend(sorted((output / "specs").glob("T-*.md")))
-    paths.extend(sorted(output.glob("report-T-*.md")))
-    paths.extend(sorted(output.glob("test-report-T-*.md")))
+    paths.extend(sorted((output / "reports").glob("T-*.md")))
+    paths.extend(sorted((output / "test-reports").glob("T-*.md")))
     return [path for path in paths if path.exists()]
 
 
@@ -90,8 +98,8 @@ def parse_design_tasks(root: Path) -> dict[str, str]:
 def task_status(root: Path, task_id: str) -> tuple[bool, bool, bool]:
     output = root / "output"
     spec_confirmed = review_status(output / "specs" / f"{task_id}.md") == "已确认"
-    report_confirmed = review_status(output / f"report-{task_id}.md") == "已确认"
-    test_confirmed = review_status(output / f"test-report-{task_id}.md") == "已确认"
+    report_confirmed = review_status(report_path(root, task_id)) == "已确认"
+    test_confirmed = review_status(test_report_path(root, task_id)) == "已确认"
     return spec_confirmed, report_confirmed, test_confirmed
 
 
@@ -103,11 +111,11 @@ def pending_stage(root: Path, pending: list[str]) -> str:
     if any(item.startswith("output/specs/") for item in pending):
         return "design_ready"
     tasks = parse_design_tasks(root)
-    any_confirmed_report = any(review_status(root / "output" / f"report-{task}.md") == "已确认" for task in tasks)
-    if any(item.startswith("output/test-report-") for item in pending):
-        all_reports = bool(tasks) and all(review_status(root / "output" / f"report-{task}.md") == "已确认" for task in tasks)
+    any_confirmed_report = any(review_status(report_path(root, task)) == "已确认" for task in tasks)
+    if any(item.startswith("output/test-reports/") for item in pending):
+        all_reports = bool(tasks) and all(review_status(report_path(root, task)) == "已确认" for task in tasks)
         return "implementation_done" if all_reports else "implementation_in_progress"
-    if any(item.startswith("output/report-") for item in pending):
+    if any(item.startswith("output/reports/") for item in pending):
         return "implementation_in_progress" if any_confirmed_report else "specs_ready"
     return "initialized"
 
