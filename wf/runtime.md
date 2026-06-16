@@ -136,6 +136,8 @@
 
 写入 `ISSUES.md` 时，新问题必须放入对应阶段章节，并按 `Q-XXX` 升序插入；有问题条目时删除该阶段的 `暂无` 占位。处理完成归档到 `CHANGELOG.md` 时，必须复用或创建正确日期章节，不得直接插到文件顶部。
 
+归档到 `CHANGELOG.md` 时必须遵守 `contracts/changelog.md` 的条目格式：日期章节下的归档条目标题必须是 `### HH:MM — {决策摘要}（来自 ISSUES.md Q-XXX）`，不得写成 `### Q-XXX — ...`。归档条目必须保留原问题、人工决策、影响和处理结果。
+
 处理决策前必须确认：
 
 - `Q-XXX` 在 `ISSUES.md` 中存在且编号唯一。
@@ -238,6 +240,14 @@
 ## `CHANGELOG.md` 更新
 
 `CHANGELOG.md` 只用于归档已解决的人工决策，不作为普通活动日志。
+
+每条归档必须写入对应日期章节下，并使用 `contracts/changelog.md` 规定的时间标题格式：
+
+```markdown
+### HH:MM — {决策摘要}（来自 ISSUES.md Q-XXX）
+```
+
+不得使用 `### Q-XXX — ...` 作为归档条目标题；`Q-XXX` 只能出现在标题的“来自 ISSUES.md Q-XXX”来源说明中。
 
 ## 上游产物修改规则
 

@@ -57,6 +57,7 @@ JOURNAL_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
 JOURNAL_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
 DATE_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
 TIME_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
+CHANGELOG_ISSUE_TITLE_RE = re.compile(r"(?m)^### (Q-\d{3})\b")
 
 
 @dataclass
@@ -291,12 +292,14 @@ def validate_date_archive(
     *,
     name: str,
     empty_section_level: str = "warn",
+    extra_entry_re: re.Pattern[str] | None = None,
 ) -> None:
     if not path.exists():
         return
     dates: list[str] = []
     current_date = ""
     entries_by_date: dict[str, list[tuple[int, int]]] = {}
+    has_entries_by_date: dict[str, bool] = {}
     unexpected_entries = False
     for line in read_text(path).splitlines():
         date_match = DATE_HEADING_RE.match(line)
@@ -304,6 +307,7 @@ def validate_date_archive(
             current_date = date_match.group(1)
             dates.append(current_date)
             entries_by_date.setdefault(current_date, [])
+            has_entries_by_date.setdefault(current_date, False)
             continue
         entry_match = TIME_ENTRY_RE.match(line)
         if entry_match:
@@ -311,6 +315,13 @@ def validate_date_archive(
                 unexpected_entries = True
                 continue
             entries_by_date.setdefault(current_date, []).append((int(entry_match.group(1)), int(entry_match.group(2))))
+            has_entries_by_date[current_date] = True
+            continue
+        if extra_entry_re and extra_entry_re.match(line):
+            if not current_date:
+                unexpected_entries = True
+                continue
+            has_entries_by_date[current_date] = True
     file = rel(path, root)
     if unexpected_entries:
         add(
@@ -340,7 +351,7 @@ def validate_date_archive(
             "新日期只能追加到文件末尾；已有日期只在该日期章节内追加",
         )
     for date, entries in entries_by_date.items():
-        if not entries:
+        if not has_entries_by_date.get(date):
             add(
                 issues,
                 empty_section_level,
@@ -416,7 +427,26 @@ def validate_issues_structure(root: Path, issues: list[Issue]) -> None:
 
 
 def validate_changelog_structure(root: Path, issues: list[Issue]) -> None:
-    validate_date_archive(root / "CHANGELOG.md", root, issues, name="changelog", empty_section_level="warn")
+    path = root / "CHANGELOG.md"
+    validate_date_archive(
+        path,
+        root,
+        issues,
+        name="changelog",
+        empty_section_level="warn",
+        extra_entry_re=CHANGELOG_ISSUE_TITLE_RE,
+    )
+    if not path.exists():
+        return
+    for issue_id in CHANGELOG_ISSUE_TITLE_RE.findall(read_text(path)):
+        add(
+            issues,
+            "fail",
+            "changelog_invalid_entry_heading",
+            "CHANGELOG.md",
+            f"归档条目标题不能使用 {issue_id} 开头",
+            f"改为 `### HH:MM — {{决策摘要}}（来自 ISSUES.md {issue_id}）`",
+        )
 
 
 def validate_analysis_structure(root: Path, issues: list[Issue]) -> None:
