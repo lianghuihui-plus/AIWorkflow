@@ -53,7 +53,7 @@
 | `design-solution` | `capabilities/design-solution.md`、`contracts/design.md`、`contracts/review-status.md`、`output/analysis.md`、必要代码仓库结构 |
 | `generate-specs` | `capabilities/generate-specs.md`、`contracts/spec.md`、`contracts/review-status.md`、`output/analysis.md`、`output/design.md`、必要代码仓库结构 |
 | `implement-code` | `capabilities/implement-code.md`、`contracts/spec.md`、`contracts/code-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、`output/design.md` 中对应任务、`output/analysis.md` 中关联需求、相关源码 |
-| `generate-tests` | `capabilities/generate-tests.md`、`contracts/test-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、目标 `output/reports/T-XXX.md`、相关源码、已有测试模式 |
+| `generate-tests` | `capabilities/generate-tests.md`、`contracts/test-report.md`、`contracts/review-status.md`、目标 `output/specs/T-XXX.md`、目标 `output/reports/T-XXX.md`、相关源码、已有测试模式、按需读取 `<wf-skill-dir>/scripts/test-runners/` |
 | `review-artifact` | 目标产物、目标产物对应契约、`contracts/review-status.md`、必要时读取 `state-machine.md` |
 | `resolve-decision` | `ISSUES.md` 中目标 `Q-XXX`、`contracts/issues.md`、`contracts/changelog.md`、目标问题影响的产物 |
 | 修订收敛 | `REVISIONS.md` 中目标 `R-XXX`、`contracts/revisions.md`、目标产物契约、`contracts/review-status.md`、目标产物、受影响下游产物 |

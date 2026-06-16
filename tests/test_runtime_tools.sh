@@ -489,13 +489,48 @@ test_rebuild_context_does_not_use_test_report_as_test_file() {
 EOF
   write_review_status "$ws/output/specs/T-001.md" "已确认"
   write_review_status "$ws/output/reports/T-001.md" "已确认"
-  write_review_status "$ws/output/test-reports/T-001.md" "已确认"
+  cat > "$ws/output/test-reports/T-001.md" <<'EOF'
+# 单元测试报告 — T-001 示例任务
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务范围
+
+demo
+
+## 已生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| 1 | normal | branch | `tests/Demo.test.ts` | 已生成 | demo |
+
+## 未生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
+
+## 辅助验证记录
+
+| # | 验证项 | 命令/方式 | 结果 | 说明 |
+|---|---|---|---|---|
+| — | 未执行 | — | 未执行 | 缺少可用测试执行脚本 |
+
+## 结论
+
+已生成单测
+EOF
 
   python3 "$ROOT_DIR/wf/tools/rebuild_context.py" "$ws"
   if grep -q "| T-001 | output/test-reports/T-001.md | ✅ 已完成 |" "$ws/CONTEXT.md"; then
     fail "test report path must not be used as test file path"
   fi
-  grep -q "| T-001 | — | ✅ 已完成 |" "$ws/CONTEXT.md" || fail "expected unknown test file placeholder"
+  grep -q "| T-001 | tests/Demo.test.ts | ✅ 已完成 |" "$ws/CONTEXT.md" || fail "expected test file from test report"
 }
 
 test_rebuild_context_uses_analysis_summary_and_preserves_constraints() {
@@ -787,7 +822,7 @@ EOF
 ### 偏离 1 — first
 EOF
   cat > "$ws/output/test-reports/T-001.md" <<'EOF'
-# 测试报告 — T-001 first
+# 单元测试报告 — T-001 first
 
 ## 审核状态
 
@@ -796,18 +831,34 @@ EOF
 - 审核时间：
 - 修订来源：
 
-## 测试清单
+## 任务范围
 
-| # | 测试用例 | 覆盖行为 | 文件 | 状态 |
+demo
+
+## 已生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| 2 | second | demo | `b.test.ts` | 已生成 | demo |
+| 1 | first | demo | `a.test.ts` | 已生成 | demo |
+
+## 未生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
+| 1 | edge | demo | — | 待补充 | reason |
+
+## 辅助验证记录
+
+| # | 验证项 | 命令/方式 | 结果 | 说明 |
 |---|---|---|---|---|
-| 2 | second | demo | `b.test.ts` | ✅ |
-| 1 | first | demo | `a.test.ts` | ✅ |
+| — | 未执行 | — | 未执行 | 缺少脚本 |
+| 1 | 单元测试执行 | `run-unit.sh` | 失败 | demo |
 
-## 未覆盖行为
+## 结论
 
-无
-
-- edge — reason
+部分生成
 EOF
 
   out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
@@ -821,8 +872,140 @@ EOF
   echo "$out" | grep -q "code_report_change_list_order_invalid" || fail "expected code report change list order warning"
   echo "$out" | grep -q "code_report_deviation_order_invalid" || fail "expected code report deviation order warning"
   echo "$out" | grep -q "code_report_deviation_none_with_entries" || fail "expected code report none-with-entries failure"
-  echo "$out" | grep -q "test_report_case_order_invalid" || fail "expected test report case order warning"
-  echo "$out" | grep -q "test_report_uncovered_none_with_entries" || fail "expected test report uncovered none-with-entries failure"
+  echo "$out" | grep -q "test_report_generated_order_invalid" || fail "expected test report generated order warning"
+  echo "$out" | grep -q "test_report_placeholder_with_entries" || fail "expected test report placeholder-with-entries failure"
+}
+
+test_validator_rejects_legacy_test_report_structure() {
+  local ws="$TMP_DIR/legacy-test-report"
+  write_base_workspace "$ws"
+  cat > "$ws/output/test-reports/T-001.md" <<'EOF'
+# 测试报告 — T-001 legacy
+
+## 审核状态
+
+- 状态：待审核
+- 审核人：
+- 审核时间：
+- 修订来源：
+
+## 测试清单
+
+| # | 测试用例 | 覆盖行为 | 文件 | 状态 |
+|---|---|---|---|---|
+| 1 | legacy | demo | `legacy.test.ts` | ✅ |
+
+## 未覆盖行为
+
+无
+EOF
+
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "fail"
+  echo "$out" | grep -q "test_report_title_invalid" || fail "expected legacy title failure"
+  echo "$out" | grep -q "test_report_legacy_section" || fail "expected legacy section failure"
+  echo "$out" | grep -q "test_report_missing_section" || fail "expected missing new section failure"
+}
+
+test_validator_accepts_new_test_report_structure_with_missing_scripts() {
+  local ws="$TMP_DIR/new-test-report"
+  write_base_workspace "$ws"
+  python3 - "$ws/CONTEXT.md" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace("- 下一步：analyze-requirements", "- 下一步：review-artifact")
+text = text.replace("  - 暂无", "  - output/test-reports/T-001.md（待审核）", 1)
+path.write_text(text)
+PY
+  cat > "$ws/output/test-reports/T-001.md" <<'EOF'
+# 单元测试报告 — T-001 demo
+
+## 审核状态
+
+- 状态：待审核
+- 审核人：
+- 审核时间：
+- 修订来源：
+
+## 任务范围
+
+demo
+
+## 已生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| 1 | normal | branch | `demo.test.ts` | 已生成 | demo |
+
+## 未生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
+
+## 辅助验证记录
+
+| # | 验证项 | 命令/方式 | 结果 | 说明 |
+|---|---|---|---|---|
+| — | 未执行 | — | 未执行 | 缺少可用测试执行脚本 |
+
+## 结论
+
+已生成单测
+EOF
+
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "pass"
+  if echo "$out" | grep -q "test_report_"; then
+    fail "expected new test report structure to pass test report validation"
+  fi
+}
+
+test_validator_rejects_confirmed_blocking_test_report() {
+  local ws="$TMP_DIR/blocking-test-report"
+  write_base_workspace "$ws"
+  cat > "$ws/output/test-reports/T-001.md" <<'EOF'
+# 单元测试报告 — T-001 blocking
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务范围
+
+demo
+
+## 已生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| 1 | normal | branch | `demo.test.ts` | 已生成，未通过 | assertion failed |
+
+## 未生成单元测试
+
+| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
+|---|---|---|---|---|---|
+| 1 | edge | edge | — | 阻塞 | 需要决策 |
+
+## 辅助验证记录
+
+| # | 验证项 | 命令/方式 | 结果 | 说明 |
+|---|---|---|---|---|
+| 1 | 单元测试执行 | `run-unit.sh` | 失败 | demo |
+
+## 结论
+
+阻塞
+EOF
+
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "fail"
+  echo "$out" | grep -q "test_report_confirmed_with_blocking_status" || fail "expected confirmed blocking test report failure"
 }
 
 test_validator_requires_output_subdirectories() {
@@ -861,6 +1044,9 @@ test_rebuild_context_uses_analysis_summary_and_preserves_constraints
 test_validator_revisions_require_ordered_sections
 test_validator_journal_requires_date_archive_order
 test_validator_detects_ordered_artifact_drift
+test_validator_rejects_legacy_test_report_structure
+test_validator_accepts_new_test_report_structure_with_missing_scripts
+test_validator_rejects_confirmed_blocking_test_report
 test_validator_requires_output_subdirectories
 test_wf_init_agent_template_uses_rendered_coding_rules
 

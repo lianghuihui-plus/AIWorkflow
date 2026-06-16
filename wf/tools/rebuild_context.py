@@ -33,6 +33,28 @@ def section(text: str, heading: str) -> str:
     return rest.strip("\n")
 
 
+def table_column_values(text: str, heading: str, column_index: int) -> list[str]:
+    body = section(text, heading)
+    values: list[str] = []
+    for line in body.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) <= column_index:
+            continue
+        if cells[0] in {"ID", "任务", "#"} or set(cells[0]) <= {"-", " "}:
+            continue
+        values.append(cells[column_index])
+    return values
+
+
+def clean_table_path(value: str) -> str:
+    value = value.strip()
+    if value in {"", "—"}:
+        return ""
+    return value.strip("`").strip()
+
+
 def title(text: str) -> str:
     first = text.splitlines()[0].strip() if text.splitlines() else "# 工作空间上下文 — 未命名"
     return first if first.startswith("# ") else "# 工作空间上下文 — 未命名"
@@ -101,6 +123,18 @@ def task_status(root: Path, task_id: str) -> tuple[bool, bool, bool]:
     report_confirmed = review_status(report_path(root, task_id)) == "已确认"
     test_confirmed = review_status(test_report_path(root, task_id)) == "已确认"
     return spec_confirmed, report_confirmed, test_confirmed
+
+
+def test_files(root: Path, task_id: str) -> str:
+    path = test_report_path(root, task_id)
+    if not path.exists():
+        return "—"
+    files = []
+    for value in table_column_values(read_text(path), "已生成单元测试", 3):
+        cleaned = clean_table_path(value)
+        if cleaned and cleaned not in files:
+            files.append(cleaned)
+    return "；".join(files) if files else "—"
 
 
 def pending_stage(root: Path, pending: list[str]) -> str:
@@ -248,7 +282,7 @@ def render_context(root: Path) -> str:
         for task_id in tasks:
             _, report_confirmed, test_confirmed = task_status(root, task_id)
             if test_confirmed:
-                lines.append(f"| {task_id} | — | ✅ 已完成 |")
+                lines.append(f"| {task_id} | {test_files(root, task_id)} | ✅ 已完成 |")
             elif report_confirmed:
                 lines.append(f"| {task_id} | — | 待测试 |")
             else:

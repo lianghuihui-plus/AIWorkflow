@@ -58,6 +58,15 @@ JOURNAL_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
 DATE_HEADING_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
 TIME_ENTRY_RE = re.compile(r"^### (\d{2}):(\d{2})\b")
 CHANGELOG_ISSUE_TITLE_RE = re.compile(r"(?m)^### (Q-\d{3})\b")
+TEST_REPORT_REQUIRED_SECTIONS = [
+    "审核状态",
+    "任务范围",
+    "已生成单元测试",
+    "未生成单元测试",
+    "辅助验证记录",
+    "结论",
+]
+TEST_REPORT_BLOCKING_STATUSES = {"阻塞", "待补充", "已生成，未通过"}
 
 
 @dataclass
@@ -165,6 +174,32 @@ def table_number_values(text: str, heading: str) -> list[str]:
     return [value for value in table_column_values(text, heading, 0) if value.isdigit()]
 
 
+def table_first_column_values(text: str, heading: str) -> list[str]:
+    return table_column_values(text, heading, 0)
+
+
+def table_row_cells(text: str, heading: str) -> list[list[str]]:
+    body = section(text, heading)
+    rows: list[list[str]] = []
+    for line in body.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells or cells[0] in {"ID", "任务", "#"} or set(cells[0]) <= {"-", " "}:
+            continue
+        rows.append(cells)
+    return rows
+
+
+def test_report_blocking_statuses(text: str) -> list[str]:
+    statuses: list[str] = []
+    for heading in ["已生成单元测试", "未生成单元测试"]:
+        for cells in table_row_cells(text, heading):
+            if len(cells) >= 5 and cells[4] in TEST_REPORT_BLOCKING_STATUSES:
+                statuses.append(cells[4])
+    return statuses
+
+
 def review_status(path: Path) -> str | None:
     if not path.exists():
         return None
@@ -249,6 +284,15 @@ def section_has_none_with_entries(text: str, heading: str, entry_pattern: re.Pat
 def section_has_none_with_list_items(text: str, heading: str) -> bool:
     body = section(text, heading)
     return bool(re.search(r"(?m)^-\s+", body) and re.search(r"(?m)^无\s*$", body))
+
+
+def table_has_placeholder_with_entries(text: str, heading: str) -> bool:
+    values = table_first_column_values(text, heading)
+    return "—" in values and any(value.isdigit() for value in values)
+
+
+def has_heading(text: str, heading: str) -> bool:
+    return bool(re.search(rf"(?m)^## {re.escape(heading)}\s*$", text))
 
 
 def ordered_ids(path: Path, heading: str, pattern: re.Pattern[str]) -> list[str]:
@@ -562,24 +606,69 @@ def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
             )
     for report in sorted((root / "output" / "test-reports").glob("T-*.md")):
         text = read_text(report)
-        test_ids = table_number_values(text, "测试清单")
-        validate_ordered_numbers(
-            issues,
-            test_ids,
-            rel(report, root),
-            "test_report_case_order_invalid",
-            "测试清单序号必须按升序排列",
-            "新增测试用例追加到表格末尾并使用下一个序号",
-            level="warn",
-        )
-        if section_has_none_with_list_items(text, "未覆盖行为"):
+        file = rel(report, root)
+        if not re.search(r"(?m)^# 单元测试报告 — T-\d{3}\b", text):
             add(
                 issues,
                 "fail",
-                "test_report_uncovered_none_with_entries",
-                rel(report, root),
-                "未覆盖行为同时存在“无”和列表条目",
-                "全部覆盖时只写“无”；存在未覆盖行为时删除“无”",
+                "test_report_title_invalid",
+                file,
+                "测试报告标题必须使用“# 单元测试报告 — T-XXX {任务标题}”",
+                "按 contracts/test-report.md 更新测试报告标题",
+            )
+        for heading in TEST_REPORT_REQUIRED_SECTIONS:
+            if not has_heading(text, heading):
+                add(
+                    issues,
+                    "fail",
+                    "test_report_missing_section",
+                    file,
+                    f"测试报告缺少章节：{heading}",
+                    "按 contracts/test-report.md 补齐单元测试报告结构",
+                )
+        for heading, typ, message in [
+            ("已生成单元测试", "test_report_generated_order_invalid", "已生成单元测试序号必须按升序排列"),
+            ("未生成单元测试", "test_report_not_generated_order_invalid", "未生成单元测试序号必须按升序排列"),
+            ("辅助验证记录", "test_report_verification_order_invalid", "辅助验证记录序号必须按升序排列"),
+        ]:
+            ids = table_number_values(text, heading)
+            validate_ordered_numbers(
+                issues,
+                ids,
+                file,
+                typ,
+                message,
+                "新增条目追加到表格末尾并使用下一个序号",
+                level="warn",
+            )
+            if table_has_placeholder_with_entries(text, heading):
+                add(
+                    issues,
+                    "fail",
+                    "test_report_placeholder_with_entries",
+                    file,
+                    f"{heading} 同时存在占位行和真实条目",
+                    "存在真实条目时删除 `—` 占位行",
+                )
+        legacy_sections = [heading for heading in ["测试清单", "未覆盖行为"] if has_heading(text, heading)]
+        if legacy_sections:
+            add(
+                issues,
+                "fail",
+                "test_report_legacy_section",
+                file,
+                f"测试报告仍使用旧章节：{', '.join(legacy_sections)}",
+                "改为 `已生成单元测试`、`未生成单元测试`、`辅助验证记录` 和 `结论`",
+            )
+        blocking_statuses = test_report_blocking_statuses(text)
+        if review_status(report) == "已确认" and blocking_statuses:
+            add(
+                issues,
+                "fail",
+                "test_report_confirmed_with_blocking_status",
+                file,
+                f"测试报告已确认但仍存在阻塞或未通过状态：{', '.join(sorted(set(blocking_statuses)))}",
+                "先通过修订或决策流程收敛测试报告，再确认测试完成",
             )
 
 
