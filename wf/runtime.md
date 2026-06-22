@@ -59,6 +59,22 @@
 | 修订收敛 | `REVISIONS.md` 中目标 `R-XXX`、`contracts/revisions.md`、目标产物契约、`contracts/review-status.md`、目标产物、受影响下游产物 |
 | `fix-workspace` | `tools/validate.py` 输出指向的异常文件；如果只是 `CONTEXT.md` 快照漂移，执行 `tools/rebuild_context.py` 后重读 `CONTEXT.md` |
 
+## 人工检视页
+
+工作空间根目录的 `dashboard.html` 是脚本生成的只读人工检视快照，用于让用户集中查看流程文件和阶段产物索引。它不是流程事实源，任何状态判断、门禁、阶段推进和决策收敛都不得读取或依赖 `dashboard.html`。
+
+`dashboard.html` 必须由当前 `wf` skill 目录下的渲染脚本生成：
+
+```text
+python <wf-skill-dir>/tools/render_review_dashboard.py <workspace>
+```
+
+渲染脚本只读取工作空间事实文件和 `output/` 阶段产物，只写入 `<workspace>/dashboard.html`。Agent 不得直接手工编辑 `dashboard.html`；需要调整展示内容或样式时，只能修改渲染脚本。
+
+每次会改变工作空间状态的事务完成后，运行时应在事实文件、状态快照和日志更新完成后 best-effort 执行渲染脚本。渲染失败不得回滚事务，也不得阻断主流程；只需在本次输出中提示 `dashboard.html` 更新失败及错误摘要。
+
+用户手动刷新浏览器即可查看最新快照。不使用自动刷新、轮询、本地服务或从 HTML 写回工作流文件。
+
 ## 写入后重读规则
 
 写入后应将对应文件标记为已修改。如果后续判断依赖该文件内容，必须重新读取。
@@ -83,7 +99,8 @@
 7. 根据产物审核状态和 `state-machine.md` 更新 `CONTEXT.md`；如只是状态快照漂移，优先通过 `rebuild_context.py` 重建。
 8. 必要时写入或解决 `ISSUES.md`。
 9. 追加 `JOURNAL.md`。
-10. 输出本次结果和下一步建议。
+10. best-effort 渲染 `dashboard.html`。
+11. 输出本次结果和下一步建议。
 
 如果执行过程中发现必须由人工决策的问题，则写入 `ISSUES.md` 和 `JOURNAL.md`，并将 `CONTEXT.md` 更新为 `blocked_by_decision` / `resolve-decision` 后停止。不得在同一次事务中继续推进到下一个能力。
 

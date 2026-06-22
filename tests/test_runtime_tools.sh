@@ -579,6 +579,252 @@ EOF
   grep -q -- "- 代码仓库：/tmp/custom-repo" "$ws/CONTEXT.md" || fail "expected project repo to be preserved"
 }
 
+test_render_review_dashboard_creates_root_html() {
+  local ws="$TMP_DIR/dashboard"
+  write_base_workspace "$ws"
+  python3 - "$ws/CONTEXT.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+path.write_text(text.replace("- 代码仓库：无", "- 代码仓库：/tmp/demo-repo"))
+PY
+  cat > "$ws/README.md" <<'EOF'
+# Demo Workspace
+EOF
+  cat > "$ws/JOURNAL.md" <<'EOF'
+# 工作日志
+
+## 2026-06-10
+
+### 10:01 — 日志 01
+
+- 记录：第 1 条日志
+
+### 10:02 — 日志 02
+
+- 记录：第 2 条日志
+
+### 10:03 — 日志 03
+
+- 记录：第 3 条日志
+
+### 10:04 — 日志 04
+
+- 记录：第 4 条日志
+
+### 10:05 — 日志 05
+
+- 记录：第 5 条日志
+
+### 10:06 — 日志 06
+
+- 记录：第 6 条日志
+
+### 10:07 — 日志 07
+
+- 记录：第 7 条日志
+
+### 10:08 — 日志 08
+
+- 记录：第 8 条日志
+
+### 10:09 — 日志 09
+
+- 记录：第 9 条日志
+EOF
+  cat > "$ws/CHANGELOG.md" <<'EOF'
+# 变更记录
+
+## 2026-06-10
+
+### 10:01 — 决策 01
+
+- **问题：** 示例问题 01
+- **决策：** 示例决策 01
+- **影响：** output/analysis.md
+- **处理：** 已归档
+
+### 10:02 — 决策 02
+
+- **问题：** 示例问题 02
+- **决策：** 示例决策 02
+- **影响：** output/analysis.md
+- **处理：** 已归档
+
+### 10:03 — 决策 03
+
+- **问题：** 示例问题 03
+- **决策：** 示例决策 03
+- **影响：** output/analysis.md
+- **处理：** 已归档
+
+### 10:04 — 决策 04
+
+- **问题：** 示例问题 04
+- **决策：** 示例决策 04
+- **影响：** output/analysis.md
+- **处理：** 已归档
+
+### 10:05 — 决策 05
+
+- **问题：** 示例问题 05
+- **决策：** 示例决策 05
+- **影响：** output/analysis.md
+- **处理：** 已归档
+
+### 11:30 — 示例决策（来自 ISSUES.md Q-001）
+
+- **问题：** 示例问题
+- **决策：** 示例决策
+- **影响：** output/analysis.md
+- **处理：** 已归档
+EOF
+  cat > "$ws/output/analysis.md" <<'EOF'
+# 需求分析 — Demo
+
+## 审核状态
+
+- 状态：待审核
+- 审核人：
+- 审核时间：
+- 修订来源：
+
+## 需求概要
+
+Demo
+
+## 功能需求
+
+### 需求纳入决策表
+
+| ID | 标题 | 所属模块 | 来源 | 处理方式 |
+|---|---|---|---|---|
+| REQ-001 | 示例纳入需求 | demo | PRD-01 | 纳入 |
+| REQ-002 | 示例排除需求 | demo | PRD-01 | 暂不纳入 |
+| REQ-003 | 示例待决策需求 | demo | PRD-01 | 待决策 |
+EOF
+  cat > "$ws/REVISIONS.md" <<'EOF'
+# 用户修订
+
+## 待处理
+
+暂无
+
+## 已处理
+
+### R-001 — 示例修订
+
+- **目标产物：** output/analysis.md
+- **修订类型：** 需求调整
+- **用户意见：** 示例意见
+- **影响范围：** analysis
+- **状态：** 已处理
+- **处理结果：** 已更新
+- **更新产物：** output/analysis.md
+- **处理时间：** 2026-06-10 11:00
+
+### R-002 — 更新修订
+
+- **目标产物：** output/design.md
+- **修订类型：** 方案调整
+- **用户意见：** 更新意见
+- **影响范围：** design
+- **状态：** 已处理
+- **处理结果：** 已更新
+- **更新产物：** output/design.md
+- **处理时间：** 2026-06-10 12:00
+EOF
+  cat > "$ws/output/design.md" <<'EOF'
+# 技术方案 — Demo
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务总览
+
+| ID | 任务标题 | 关联需求 | 依赖 | 状态 |
+|---|---|---|---|---|
+| T-001 | 示例任务 | REQ-001 | — | 待开发 |
+EOF
+  write_review_status "$ws/output/specs/T-001.md" "已确认"
+
+  python3 "$ROOT_DIR/wf/tools/render_review_dashboard.py" "$ws" >/dev/null
+
+  test -f "$ws/dashboard.html" || fail "expected dashboard.html to be generated in workspace root"
+  grep -q "<h1>Demo</h1>" "$ws/dashboard.html" || fail "expected project dashboard title"
+  if grep -q "Demo 工作流" "$ws/dashboard.html"; then
+    fail "dashboard title must not append workflow suffix"
+  fi
+  if grep -q "<h1>AIWorkFlow Dashboard</h1>" "$ws/dashboard.html"; then
+    fail "dashboard title must use project name"
+  fi
+  grep -q "项目上下文" "$ws/dashboard.html" || fail "expected project context"
+  grep -q "页面大纲" "$ws/dashboard.html" || fail "expected outline sidebar"
+  grep -q 'href="#revisions"' "$ws/dashboard.html" || fail "expected outline anchor links"
+  grep -q 'id="revisions"' "$ws/dashboard.html" || fail "expected revision section anchor"
+  grep -q "pipeline-step" "$ws/dashboard.html" || fail "expected workflow pipeline"
+  grep -q "data-state=" "$ws/dashboard.html" || fail "expected pipeline state attributes"
+  grep -q "需求分析" "$ws/dashboard.html" || fail "expected pipeline analysis step"
+  grep -q "测试生成" "$ws/dashboard.html" || fail "expected pipeline test step"
+  grep -q "结构完整" "$ws/dashboard.html" || fail "expected workspace status"
+  grep -q 'class="metric attention" href="#todos"' "$ws/dashboard.html" || fail "expected attention metric anchor"
+  grep -q 'class="metric" href="#issues"' "$ws/dashboard.html" || fail "expected issue metric anchor"
+  grep -q 'class="metric" href="#revisions"' "$ws/dashboard.html" || fail "expected revision metric anchor"
+  grep -q 'class="metric" href="#artifacts"' "$ws/dashboard.html" || fail "expected artifact metric anchor"
+  grep -q "/tmp/demo-repo" "$ws/dashboard.html" || fail "expected concrete code repo path"
+  grep -q "prd/req.md" "$ws/dashboard.html" || fail "expected prd file list"
+  grep -q "output/analysis.md" "$ws/dashboard.html" || fail "expected artifact path"
+  if grep -q 'href="output/analysis.md"' "$ws/dashboard.html"; then
+    fail "dashboard must not link directly to markdown artifacts"
+  fi
+  grep -q "待审核" "$ws/dashboard.html" || fail "expected pending review status"
+  grep -q "todo-type" "$ws/dashboard.html" || fail "expected redesigned todo type column"
+  grep -q "todo-meta" "$ws/dashboard.html" || fail "expected redesigned todo metadata"
+  grep -q "T-001" "$ws/dashboard.html" || fail "expected task matrix entry"
+  grep -q "task-progress-board" "$ws/dashboard.html" || fail "expected card-style task progress"
+  grep -q "artifact-summary-board" "$ws/dashboard.html" || fail "expected artifact summary board"
+  grep -q "requirement-board" "$ws/dashboard.html" || fail "expected grouped requirement board"
+  grep -q "requirement-group warn" "$ws/dashboard.html" || fail "expected pending requirement group"
+  grep -q "requirement-group ok" "$ws/dashboard.html" || fail "expected included requirement group"
+  grep -q "requirement-group muted" "$ws/dashboard.html" || fail "expected excluded requirement group"
+  python3 - "$ws/dashboard.html" <<'PY' || fail "expected requirement groups to prioritize pending, then included, then excluded"
+from pathlib import Path
+import sys
+
+html = Path(sys.argv[1]).read_text()
+if not (html.index("示例待决策需求") < html.index("示例纳入需求") < html.index("示例排除需求")):
+    raise SystemExit(1)
+PY
+  grep -q "revision-dialog" "$ws/dashboard.html" || fail "expected dialog-style revision rendering"
+  grep -q "用户意见" "$ws/dashboard.html" || fail "expected revision user opinion label"
+  grep -q "已更新" "$ws/dashboard.html" || fail "expected revision handled result"
+  grep -q "处理时间：2026-06-10 11:00" "$ws/dashboard.html" || fail "expected handled revision time"
+  python3 - "$ws/dashboard.html" <<'PY' || fail "expected revisions to render in reverse order"
+from pathlib import Path
+import sys
+
+html = Path(sys.argv[1]).read_text()
+if html.index("R-002") > html.index("R-001"):
+    raise SystemExit(1)
+PY
+  grep -q "决策 01" "$ws/dashboard.html" || fail "expected full changelog, not recent-only entries"
+  grep -q "日志 01" "$ws/dashboard.html" || fail "expected full journal, not recent-only entries"
+  grep -q "timeline-date-group" "$ws/dashboard.html" || fail "expected grouped timeline rendering"
+  grep -q "border-left: 2px dashed" "$ws/dashboard.html" || fail "expected dashed timeline arrows"
+  grep -q "timeline-detail" "$ws/dashboard.html" || fail "expected structured timeline details"
+  grep -q ">问题<" "$ws/dashboard.html" || fail "expected plain changelog detail label"
+  grep -q ">示例问题<" "$ws/dashboard.html" || fail "expected plain changelog detail value"
+  if grep -q "\\*\\*问题" "$ws/dashboard.html"; then
+    fail "timeline markdown bold markers should be cleaned"
+  fi
+}
+
 test_validator_revisions_require_ordered_sections() {
   local ws="$TMP_DIR/revisions-order"
   write_base_workspace "$ws"
@@ -1041,6 +1287,7 @@ test_rebuild_context_repairs_false_completion
 test_rebuild_context_counts_issues_with_task_ids
 test_rebuild_context_does_not_use_test_report_as_test_file
 test_rebuild_context_uses_analysis_summary_and_preserves_constraints
+test_render_review_dashboard_creates_root_html
 test_validator_revisions_require_ordered_sections
 test_validator_journal_requires_date_archive_order
 test_validator_detects_ordered_artifact_drift

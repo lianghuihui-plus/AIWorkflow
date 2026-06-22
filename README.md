@@ -31,6 +31,7 @@
 | `wf/contracts/` | 产物格式契约，包含 `REVISIONS.md` 修订契约和审核状态契约 |
 | `wf/tools/validate.py` | `wf` 内置校验器，用于状态改变前的确定性硬门禁 |
 | `wf/tools/rebuild_context.py` | 根据阶段产物事实重建 `CONTEXT.md` 状态快照 |
+| `wf/tools/render_review_dashboard.py` | 根据工作空间事实渲染根目录 `dashboard.html` 人工检视页 |
 | `wf-status/tools/validate.py` | `wf-status` 内置校验器，用于只读健康检查 |
 | `tools/validator_source/validate.py` | 校验器维护源，通过同步脚本复制到各 skill 目录 |
 | `scripts/sync_validator_tools.py` | 同步校验器到 `wf/` 和 `wf-status/` skill 目录 |
@@ -50,6 +51,7 @@
 ├── REVISIONS.md        ← 用户主动提出的产物修订
 ├── JOURNAL.md          ← 工作日志，每操作一记
 ├── CHANGELOG.md        ← 已解决决策的时间线归档
+├── dashboard.html      ← 脚本生成的人工检视快照
 ├── prd/                ← 原始 PRD 文件副本
 └── output/
     ├── analysis.md     ← 结构化需求分析
@@ -78,6 +80,8 @@
 
 `validate.py` 负责确定性结构检查和动作硬门禁；`rebuild_context.py` 只根据产物事实重建 `CONTEXT.md`，不得修改 `output/` 阶段产物、`ISSUES.md`、`REVISIONS.md` 或代码仓库。
 
+`dashboard.html` 是由 `wf/tools/render_review_dashboard.py` 生成的只读人工检视页面，可纳入版本管理，但不作为流程事实源。它从 `CONTEXT.md`、`ISSUES.md`、`REVISIONS.md`、`JOURNAL.md`、`CHANGELOG.md`、`prd/` 和 `output/` 提取工作空间状态、PRD、需求、待办、任务、产物、日志和归档信息；冲突时始终以 Markdown 文件和阶段产物为准。
+
 `wf` 和 `wf-status` 各自使用 skill 目录内的 `tools/validate.py`。维护时只修改 `tools/validator_source/validate.py`，再执行：
 
 ```text
@@ -97,6 +101,7 @@ python scripts/sync_validator_tools.py
 | 问题解决 | `CHANGELOG.md` | 复用当天日期章节并追加；新日期只在文件末尾新增 | `### HH:MM — 摘要（来自 ISSUES.md Q-XXX）` |
 | 阶段推进 | `CONTEXT.md` | `## 当前状态` 更新 | 阶段/下一步 |
 | 操作完成 | `JOURNAL.md` | 复用当天日期章节并追加；新日期只在文件末尾新增 | HH:MM 时间戳 + 内容 |
+| 人工检视页刷新 | `dashboard.html` | 工作空间根目录整体覆盖 | 由 `render_review_dashboard.py` 生成，不手工编辑 |
 
 **问题收敛：**
 
