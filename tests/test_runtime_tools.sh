@@ -704,6 +704,14 @@ Demo
 | REQ-001 | 示例纳入需求 | demo | PRD-01 | 纳入 |
 | REQ-002 | 示例排除需求 | demo | PRD-01 | 暂不纳入 |
 | REQ-003 | 示例待决策需求 | demo | PRD-01 | 待决策 |
+
+### 原文引用
+
+>> 用户原文引用内容
+
+#### REQ-001 — 示例需求标题
+
+需求标题不能比上级标题更小。
 EOF
   cat > "$ws/REVISIONS.md" <<'EOF'
 # 用户修订
@@ -753,6 +761,7 @@ EOF
 | T-001 | 示例任务 | REQ-001 | — | 待开发 |
 EOF
   write_review_status "$ws/output/specs/T-001.md" "已确认"
+  write_review_status "$ws/output/reports/T-001.md" "待审核"
 
   python3 "$ROOT_DIR/wf/tools/render_review_dashboard.py" "$ws" >/dev/null
 
@@ -773,19 +782,46 @@ EOF
   grep -q "需求分析" "$ws/dashboard.html" || fail "expected pipeline analysis step"
   grep -q "测试生成" "$ws/dashboard.html" || fail "expected pipeline test step"
   grep -q "结构完整" "$ws/dashboard.html" || fail "expected workspace status"
-  grep -q 'class="metric attention" href="#todos"' "$ws/dashboard.html" || fail "expected attention metric anchor"
+  if grep -q "需要人工关注" "$ws/dashboard.html"; then
+    fail "attention summary metric should be removed"
+  fi
   grep -q 'class="metric" href="#issues"' "$ws/dashboard.html" || fail "expected issue metric anchor"
   grep -q 'class="metric" href="#revisions"' "$ws/dashboard.html" || fail "expected revision metric anchor"
   grep -q 'class="metric" href="#artifacts"' "$ws/dashboard.html" || fail "expected artifact metric anchor"
   grep -q "/tmp/demo-repo" "$ws/dashboard.html" || fail "expected concrete code repo path"
   grep -q "prd/req.md" "$ws/dashboard.html" || fail "expected prd file list"
   grep -q "output/analysis.md" "$ws/dashboard.html" || fail "expected artifact path"
+  grep -q 'href="#artifact-output-analysis-md"' "$ws/dashboard.html" || fail "expected artifact content anchor link"
+  grep -q 'id="artifact-output-analysis-md"' "$ws/dashboard.html" || fail "expected artifact preview anchor"
+  grep -q 'href="#artifact-output-specs-t-001-md"' "$ws/dashboard.html" || fail "expected task artifact anchor link"
+  grep -q 'id="artifact-content"' "$ws/dashboard.html" || fail "expected artifact content section"
+  grep -q "artifact-preview" "$ws/dashboard.html" || fail "expected artifact preview details"
+  grep -q "artifact-preview-head" "$ws/dashboard.html" || fail "expected document-style artifact preview header"
+  grep -q "artifact-markdown" "$ws/dashboard.html" || fail "expected rendered markdown preview"
+  grep -q "md-table-wrap" "$ws/dashboard.html" || fail "expected markdown table rendering"
+  grep -q "<h5>REQ-001 — 示例需求标题</h5>" "$ws/dashboard.html" || fail "expected deep requirement heading rendering"
+  grep -q ".artifact-markdown h3 { font-size: 17px;" "$ws/dashboard.html" || fail "expected artifact h3 heading size"
+  grep -q ".artifact-markdown h4 { font-size: 16px;" "$ws/dashboard.html" || fail "expected artifact h4 heading size"
+  grep -q ".artifact-markdown h5 { font-size: 15px;" "$ws/dashboard.html" || fail "expected artifact h5 heading size"
+  grep -q "<blockquote>" "$ws/dashboard.html" || fail "expected blockquote rendering"
+  grep -q "用户原文引用内容" "$ws/dashboard.html" || fail "expected blockquote content"
+  if grep -q "&gt;&gt; 用户原文引用内容" "$ws/dashboard.html"; then
+    fail "blockquote markers should be stripped from artifact preview"
+  fi
+  grep -q "openArtifactTarget" "$ws/dashboard.html" || fail "expected artifact anchor auto-open script"
   if grep -q 'href="output/analysis.md"' "$ws/dashboard.html"; then
     fail "dashboard must not link directly to markdown artifacts"
   fi
   grep -q "待审核" "$ws/dashboard.html" || fail "expected pending review status"
   grep -q "todo-type" "$ws/dashboard.html" || fail "expected redesigned todo type column"
   grep -q "todo-meta" "$ws/dashboard.html" || fail "expected redesigned todo metadata"
+  grep -q -- '--card-bg:' "$ws/dashboard.html" || fail "expected shared card background token"
+  grep -q '<span class="pill warn">待审核</span>' "$ws/dashboard.html" || fail "expected unified pending review status pill"
+  grep -q -- '--warn: #d6a100;' "$ws/dashboard.html" || fail "expected bright yellow pending review color"
+  grep -q 'status-count warn' "$ws/dashboard.html" || fail "expected unified pending review status count"
+  grep -q "todo-action" "$ws/dashboard.html" || fail "expected todo artifact review action layout"
+  grep -q "todo-action-link" "$ws/dashboard.html" || fail "expected unified todo action button style"
+  grep -q "去审核" "$ws/dashboard.html" || fail "expected todo artifact review action"
   grep -q "T-001" "$ws/dashboard.html" || fail "expected task matrix entry"
   grep -q "task-progress-board" "$ws/dashboard.html" || fail "expected card-style task progress"
   grep -q "artifact-summary-board" "$ws/dashboard.html" || fail "expected artifact summary board"
@@ -798,10 +834,13 @@ from pathlib import Path
 import sys
 
 html = Path(sys.argv[1]).read_text()
+html = html.split('id="requirements"', 1)[1]
 if not (html.index("示例待决策需求") < html.index("示例纳入需求") < html.index("示例排除需求")):
     raise SystemExit(1)
 PY
   grep -q "revision-dialog" "$ws/dashboard.html" || fail "expected dialog-style revision rendering"
+  grep -q -- '--revision-user-bg:' "$ws/dashboard.html" || fail "expected distinct user revision bubble color token"
+  grep -q -- '--revision-result-bg:' "$ws/dashboard.html" || fail "expected distinct revision result bubble color token"
   grep -q "用户意见" "$ws/dashboard.html" || fail "expected revision user opinion label"
   grep -q "已更新" "$ws/dashboard.html" || fail "expected revision handled result"
   grep -q "处理时间：2026-06-10 11:00" "$ws/dashboard.html" || fail "expected handled revision time"
@@ -818,6 +857,7 @@ PY
   grep -q "timeline-date-group" "$ws/dashboard.html" || fail "expected grouped timeline rendering"
   grep -q "border-left: 2px dashed" "$ws/dashboard.html" || fail "expected dashed timeline arrows"
   grep -q "timeline-detail" "$ws/dashboard.html" || fail "expected structured timeline details"
+  grep -q "timeline-detail body" "$ws/dashboard.html" || fail "expected readable timeline body detail style"
   grep -q ">问题<" "$ws/dashboard.html" || fail "expected plain changelog detail label"
   grep -q ">示例问题<" "$ws/dashboard.html" || fail "expected plain changelog detail value"
   if grep -q "\\*\\*问题" "$ws/dashboard.html"; then

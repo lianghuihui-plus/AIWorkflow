@@ -466,15 +466,26 @@ def path_text(path: str) -> str:
     return f'<code class="path">{esc(path)}</code>'
 
 
+def artifact_anchor(path: Path, root: Path) -> str:
+    raw = rel(path, root)
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", raw).strip("-").lower()
+    return f"artifact-{safe or 'item'}"
+
+
+def artifact_link(path: Path, root: Path, label: str = "查看内容", extra_class: str = "") -> str:
+    classes = "artifact-link" + (f" {extra_class}" if extra_class else "")
+    return f'<a class="{esc(classes)}" href="#{esc(artifact_anchor(path, root))}">{esc(label)}</a>'
+
+
 def pill(value: str) -> str:
     return f'<span class="pill {status_class(value)}">{esc(value)}</span>'
 
 
 def todo_meta(items: list[tuple[str, str]]) -> str:
-    blocks = "".join(
-        f"<div><span>{esc(label)}</span><strong>{esc(value)}</strong></div>"
-        for label, value in items
-    )
+    blocks = ""
+    for label, value in items:
+        value_html = pill(value) if label == "状态" else esc(value)
+        blocks += f"<div><span>{esc(label)}</span><strong>{value_html}</strong></div>"
     return f'<div class="todo-meta">{blocks}</div>'
 
 
@@ -504,9 +515,12 @@ def render_action_queue(root: Path, artifact_items: list[Artifact], issues: list
                 <article class="todo-card {status_class(item.status)}">
                   <div class="todo-type"><strong>产物审核</strong><span>{esc(item.kind)}</span></div>
                   <div class="todo-main">
-                    <h3>{path_text(path)}</h3>
-                    <p>需要人工确认该阶段产物是否可以进入后续流程。</p>
-                    {todo_meta([("状态", item.status), ("审核人", item.reviewer), ("修订来源", item.revision_source)])}
+                    <div class="todo-content">
+                      <h3>{path_text(path)}</h3>
+                      <p>需要人工确认该阶段产物是否可以进入后续流程。</p>
+                      {todo_meta([("状态", item.status), ("审核人", item.reviewer), ("修订来源", item.revision_source)])}
+                    </div>
+                    <div class="todo-action">{artifact_link(item.path, root, "去审核", "todo-action-link")}</div>
                   </div>
                 </article>
                 """
@@ -593,6 +607,7 @@ def render_artifact_board(root: Path, items: list[Artifact]) -> str:
               <div class="artifact-main">
                 {path_text(rel(item.path, root))}
                 {pill(item.status)}
+                {artifact_link(item.path, root)}
               </div>
               <div class="artifact-meta">
                 <span>审核人：{esc(item.reviewer)}</span>
@@ -602,7 +617,7 @@ def render_artifact_board(root: Path, items: list[Artifact]) -> str:
             """
         else:
             chips = "".join(
-                f"<span>{esc(status)}：{count}</span>"
+                f'<span class="status-count {status_class(status)}"><strong>{esc(status)}</strong>：{count}</span>'
                 for status, count in summary.items()
                 if count
             )
@@ -612,6 +627,7 @@ def render_artifact_board(root: Path, items: list[Artifact]) -> str:
                 {pill("已确认" if confirmed == len(group_items) else "待审核" if summary.get("待审核", 0) else "未设置")}
               </div>
               <div class="artifact-meta">{chips}</div>
+              <div class="artifact-links">{"".join(artifact_link(item.path, root, item.task_id if item.task_id != "—" else rel(item.path, root)) for item in group_items)}</div>
             """
         cards.append(
             f"""
@@ -661,10 +677,10 @@ def render_task_matrix(root: Path, tasks: dict[str, str]) -> str:
             if path.exists():
                 checkpoints.append(
                     f"""
-                    <div class="task-checkpoint {status_class(fields["状态"] or "未设置")}">
+                    <a class="task-checkpoint {status_class(fields["状态"] or "未设置")}" href="#{esc(artifact_anchor(path, root))}">
                       <span>{esc(label)}</span>
                       {pill(fields["状态"] or "未设置")}
-                    </div>
+                    </a>
                     """
                 )
             else:
@@ -900,8 +916,9 @@ def render_timeline_detail(detail: str) -> str:
     label = label.strip()
     value = value.strip()
     if label and value:
-        return f'<div class="timeline-detail"><span>{esc(label)}</span><p>{esc(value)}</p></div>'
-    return f'<div class="timeline-detail single"><p>{esc(detail)}</p></div>'
+        tone = " body" if label in {"问题", "内容", "说明", "结果", "处理", "决策", "日志"} else ""
+        return f'<div class="timeline-detail{tone}"><span>{esc(label)}</span><p>{esc(value)}</p></div>'
+    return f'<div class="timeline-detail body single"><p>{esc(detail)}</p></div>'
 
 
 def render_timeline(entries: list[TimelineEntry], empty_message: str) -> str:
@@ -940,6 +957,154 @@ def render_timeline(entries: list[TimelineEntry], empty_message: str) -> str:
     return '<div class="timeline">' + "\n".join(date_groups) + "</div>"
 
 
+def render_inline_markdown(text: str) -> str:
+    escaped = esc(text)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", escaped)
+    return escaped
+
+
+def is_table_separator(line: str) -> bool:
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return bool(cells) and all(cell and set(cell) <= {"-", ":"} for cell in cells)
+
+
+def table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def render_markdown_preview(text: str) -> str:
+    lines = text.splitlines()
+    html_parts: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+    quote_lines: list[str] = []
+    in_code = False
+    code_lines: list[str] = []
+    index = 0
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            html_parts.append(f"<p>{render_inline_markdown(' '.join(paragraph))}</p>")
+            paragraph = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if list_items:
+            html_parts.append("<ul>" + "".join(f"<li>{render_inline_markdown(item)}</li>" for item in list_items) + "</ul>")
+            list_items = []
+
+    def flush_quote() -> None:
+        nonlocal quote_lines
+        if quote_lines:
+            html_parts.append("<blockquote>" + "".join(f"<p>{render_inline_markdown(item)}</p>" for item in quote_lines) + "</blockquote>")
+            quote_lines = []
+
+    def flush_code() -> None:
+        nonlocal code_lines
+        html_parts.append("<pre><code>" + esc("\n".join(code_lines)) + "</code></pre>")
+        code_lines = []
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            flush_paragraph()
+            flush_list()
+            flush_quote()
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                in_code = True
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            flush_quote()
+            index += 1
+            continue
+        quote = re.match(r"^>+\s?(.*)$", stripped)
+        if quote:
+            flush_paragraph()
+            flush_list()
+            quote_lines.append(quote.group(1).strip())
+            index += 1
+            continue
+        if stripped.startswith("|") and index + 1 < len(lines) and lines[index + 1].strip().startswith("|") and is_table_separator(lines[index + 1]):
+            flush_paragraph()
+            flush_list()
+            flush_quote()
+            headers = table_cells(stripped)
+            index += 2
+            rows = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                rows.append(table_cells(lines[index].strip()))
+                index += 1
+            header_html = "".join(f"<th>{render_inline_markdown(cell)}</th>" for cell in headers)
+            row_html = "".join(
+                "<tr>" + "".join(f"<td>{render_inline_markdown(cell)}</td>" for cell in row) + "</tr>"
+                for row in rows
+            )
+            html_parts.append(f'<div class="md-table-wrap"><table><thead><tr>{header_html}</tr></thead><tbody>{row_html}</tbody></table></div>')
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            flush_paragraph()
+            flush_list()
+            flush_quote()
+            level = min(len(heading.group(1)) + 1, 5)
+            html_parts.append(f"<h{level}>{render_inline_markdown(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if stripped.startswith("- "):
+            flush_paragraph()
+            flush_quote()
+            list_items.append(stripped[2:].strip())
+            index += 1
+            continue
+        flush_list()
+        flush_quote()
+        paragraph.append(stripped)
+        index += 1
+
+    flush_paragraph()
+    flush_list()
+    flush_quote()
+    if in_code:
+        flush_code()
+    return '<div class="artifact-markdown">' + "\n".join(html_parts) + "</div>"
+
+
+def render_artifact_previews(root: Path, items: list[Artifact]) -> str:
+    if not items:
+        return empty("暂无可预览产物。")
+    previews = []
+    for item in items:
+        content = render_markdown_preview(read_text(item.path))
+        previews.append(
+            f"""
+            <details class="artifact-preview" id="{esc(artifact_anchor(item.path, root))}">
+              <summary>
+                <div class="artifact-preview-head">
+                  <span>{esc(item.kind)}</span>
+                  <strong>{path_text(rel(item.path, root))}</strong>
+                </div>
+                <div class="artifact-preview-state">{pill(item.status)}</div>
+              </summary>
+              {content}
+            </details>
+            """
+        )
+    return '<div class="artifact-preview-list">' + "\n".join(previews) + "</div>"
+
+
 def table(headers: list[str], rows: list[str]) -> str:
     header_html = "".join(f"<th>{esc(item)}</th>" for item in headers)
     return f"""
@@ -974,7 +1139,6 @@ def render_dashboard(root: Path) -> str:
     pending_revisions = len([item for item in revisions if item.bucket == "待处理"])
     undecided_requirements = len([item for item in requirements if item.decision in {"", "待决策"}])
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    attention = pending_artifacts + open_issues + pending_revisions + undecided_requirements
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -985,27 +1149,45 @@ def render_dashboard(root: Path) -> str:
   <style>
     :root {{
       color-scheme: light;
-      --bg: #f4f6f8;
+      --bg: #f5fbff;
       --surface: #ffffff;
-      --surface-soft: #f8fafc;
-      --text: #17212b;
-      --muted: #64748b;
-      --line: #d9e0ea;
-      --accent: #1d4ed8;
-      --accent-soft: #e8f0ff;
-      --ok: #087443;
-      --ok-soft: #e8f7ef;
-      --warn: #9a5b00;
-      --warn-soft: #fff4dc;
-      --danger: #b42318;
-      --danger-soft: #fff0ee;
-      --info-soft: #eef6ff;
+      --surface-soft: #f8fcff;
+      --surface-tint: #eef8ff;
+      --card-bg: #f8fcff;
+      --card-inner-bg: #ffffff;
+      --text: #111827;
+      --muted: #5f6f86;
+      --line: #d8e8f6;
+      --accent: #0ea5e9;
+      --accent-strong: #0284c7;
+      --accent-border: #7dd3fc;
+      --accent-soft: #e0f2fe;
+      --ok: #059669;
+      --ok-border: #86efac;
+      --ok-soft: #ecfdf5;
+      --warn: #d6a100;
+      --warn-border: #fde047;
+      --warn-soft: #fefce8;
+      --danger: #dc2626;
+      --danger-border: #fca5a5;
+      --danger-soft: #fef2f2;
+      --info-soft: #e0f2fe;
+      --revision-user-bg: #eff9ff;
+      --revision-user-border: #bae6fd;
+      --revision-result-bg: #f0fdfa;
+      --revision-result-border: #99f6e4;
+      --radius: 8px;
+      --radius-sm: 6px;
+      --shadow: 0 18px 48px rgba(14, 116, 144, 0.10);
+      --shadow-soft: 0 8px 22px rgba(2, 132, 199, 0.06);
     }}
     * {{ box-sizing: border-box; }}
     html {{ scroll-behavior: smooth; }}
     body {{
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, rgba(224, 242, 254, 0.76), rgba(245, 251, 255, 0) 360px),
+        var(--bg);
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
@@ -1019,8 +1201,9 @@ def render_dashboard(root: Path) -> str:
     .hero {{
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 24px;
+      box-shadow: var(--shadow);
     }}
     .hero-top {{
       display: grid;
@@ -1058,7 +1241,7 @@ def render_dashboard(root: Path) -> str:
       align-items: flex-start;
       min-width: 0;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       background: var(--surface-soft);
       padding: 10px;
     }}
@@ -1104,20 +1287,20 @@ def render_dashboard(root: Path) -> str:
       overflow-wrap: anywhere;
     }}
     .pipeline-step.done {{
-      background: var(--ok-soft);
-      border-color: #adddc1;
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
     }}
     .pipeline-step.done::after {{
-      border-color: var(--ok);
+      border-color: var(--accent);
     }}
     .pipeline-step.done .pipeline-dot {{
       color: #ffffff;
-      background: var(--ok);
-      border-color: var(--ok);
+      background: var(--accent);
+      border-color: var(--accent);
     }}
     .pipeline-step.current {{
       background: var(--accent-soft);
-      border-color: #a7c5ff;
+      border-color: var(--accent-border);
     }}
     .pipeline-step.current::after {{
       border-color: var(--accent);
@@ -1128,33 +1311,33 @@ def render_dashboard(root: Path) -> str:
       border-color: var(--accent);
     }}
     .pipeline-step.review {{
-      background: var(--warn-soft);
-      border-color: #ecc47c;
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
     }}
     .pipeline-step.review::after {{
-      border-color: #d9901f;
+      border-color: var(--accent);
     }}
     .pipeline-step.review .pipeline-dot {{
       color: #ffffff;
-      background: #d9901f;
-      border-color: #d9901f;
+      background: var(--accent);
+      border-color: var(--accent);
     }}
     .pipeline-step.blocked {{
-      background: var(--danger-soft);
-      border-color: #f0b8b2;
+      background: var(--accent-soft);
+      border-color: var(--accent-border);
     }}
     .pipeline-step.blocked::after {{
-      border-color: var(--danger);
+      border-color: var(--accent);
     }}
     .pipeline-step.blocked .pipeline-dot {{
       color: #ffffff;
-      background: var(--danger);
-      border-color: var(--danger);
+      background: var(--accent);
+      border-color: var(--accent);
     }}
     .pipeline-note {{
       margin-top: 8px;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 8px 10px;
       color: var(--muted);
       background: var(--surface-soft);
@@ -1162,33 +1345,29 @@ def render_dashboard(root: Path) -> str:
     }}
     .pipeline-note.danger {{
       color: var(--danger);
-      background: var(--danger-soft);
-      border-color: #f0b8b2;
+      background: var(--surface);
+      border-color: var(--danger-border);
     }}
     .metrics {{
       display: grid;
-      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      grid-template-columns: repeat(3, minmax(150px, 1fr));
       gap: 10px;
       margin-top: 20px;
     }}
     .metric {{
       display: block;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 12px;
-      background: var(--surface-soft);
+      background: var(--card-bg);
       color: inherit;
       text-decoration: none;
       min-width: 0;
     }}
     a.metric:hover {{
-      border-color: #a7c5ff;
+      border-color: var(--accent-border);
       box-shadow: 0 6px 18px rgba(29, 78, 216, 0.10);
       text-decoration: none;
-    }}
-    .metric.attention {{
-      border-color: #f3bd6a;
-      background: linear-gradient(180deg, #fff8ea 0%, var(--warn-soft) 100%);
     }}
     .metric span {{ display: block; color: var(--muted); font-size: 12px; }}
     .metric strong {{ display: block; font-size: 22px; margin-top: 4px; overflow-wrap: anywhere; }}
@@ -1206,11 +1385,12 @@ def render_dashboard(root: Path) -> str:
       top: 18px;
       align-self: start;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       background: var(--surface);
       padding: 10px;
       max-height: calc(100vh - 36px);
       overflow: auto;
+      box-shadow: var(--shadow-soft);
     }}
     .outline-head {{
       display: flex;
@@ -1229,7 +1409,7 @@ def render_dashboard(root: Path) -> str:
       width: 30px;
       height: 30px;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       background: var(--surface-soft);
       color: var(--text);
       cursor: pointer;
@@ -1273,15 +1453,16 @@ def render_dashboard(root: Path) -> str:
     .panel {{
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 18px;
+      border-radius: var(--radius);
+      padding: 20px;
       margin-bottom: 18px;
       min-width: 0;
       scroll-margin-top: 18px;
+      box-shadow: var(--shadow-soft);
     }}
     .panel.primary {{
-      border-color: #c9d8ee;
-      background: #fbfdff;
+      border-color: var(--line);
+      background: var(--surface);
     }}
     .context-grid {{
       display: grid;
@@ -1290,9 +1471,9 @@ def render_dashboard(root: Path) -> str:
     }}
     .context-card {{
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 14px;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 16px;
       min-width: 0;
     }}
     .meta-card {{
@@ -1333,7 +1514,7 @@ def render_dashboard(root: Path) -> str:
     .req-stat-row strong {{
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface);
+      background: var(--card-inner-bg);
       padding: 1px 8px;
       font-size: 12px;
     }}
@@ -1343,7 +1524,7 @@ def render_dashboard(root: Path) -> str:
       gap: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--surface-soft);
+      background: var(--card-bg);
       padding: 9px 12px;
     }}
     .missing-line > span {{ white-space: nowrap; }}
@@ -1356,7 +1537,7 @@ def render_dashboard(root: Path) -> str:
     .missing-line div span {{
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface);
+      background: var(--card-inner-bg);
       padding: 1px 8px;
       font-size: 12px;
       white-space: nowrap;
@@ -1384,7 +1565,9 @@ def render_dashboard(root: Path) -> str:
       justify-content: space-between;
       gap: 18px;
       align-items: start;
-      margin-bottom: 14px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
     }}
     .section-heading h2 {{ margin-bottom: 0; }}
     .section-heading p {{
@@ -1400,14 +1583,12 @@ def render_dashboard(root: Path) -> str:
       grid-template-columns: 128px minmax(0, 1fr);
       gap: 14px;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
+      border-radius: var(--radius);
+      background: var(--card-bg);
       padding: 0;
       overflow: hidden;
+      box-shadow: 0 8px 22px rgba(2, 132, 199, 0.04);
     }}
-    .todo-card.ok {{ border-color: #c8ead6; }}
-    .todo-card.warn {{ border-color: #f2d49a; }}
-    .todo-card.danger {{ border-color: #f4c9c4; }}
     .todo-type {{
       display: grid;
       align-content: start;
@@ -1415,11 +1596,8 @@ def render_dashboard(root: Path) -> str:
       min-width: 0;
       border-right: 1px solid var(--line);
       padding: 14px 12px;
-      background: var(--surface-soft);
+      background: var(--surface-tint);
     }}
-    .todo-card.ok .todo-type {{ background: var(--ok-soft); }}
-    .todo-card.warn .todo-type {{ background: var(--warn-soft); }}
-    .todo-card.danger .todo-type {{ background: var(--danger-soft); }}
     .todo-type strong {{
       color: var(--text);
       font-size: 13px;
@@ -1433,9 +1611,40 @@ def render_dashboard(root: Path) -> str:
     }}
     .todo-main {{
       display: grid;
-      gap: 9px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
       min-width: 0;
       padding: 14px 14px 14px 0;
+    }}
+    .todo-content {{
+      display: grid;
+      gap: 9px;
+      min-width: 0;
+    }}
+    .todo-action {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      align-self: center;
+      flex: 0 0 auto;
+    }}
+    .todo-action .todo-action-link {{
+      flex: 0 0 88px;
+      width: 88px;
+      height: 36px;
+      min-height: 0;
+      justify-content: center;
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #ffffff;
+      padding: 0;
+      font-size: 13px;
+      line-height: 1;
+    }}
+    .todo-action .todo-action-link:hover {{
+      background: var(--accent-strong);
+      border-color: var(--accent-strong);
     }}
     .todo-main h3 {{
       margin: 0;
@@ -1445,18 +1654,24 @@ def render_dashboard(root: Path) -> str:
     }}
     .todo-main p {{
       margin: 0;
-      color: #334155;
+      color: #1f2937;
       overflow-wrap: anywhere;
     }}
     .todo-meta {{
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
+      gap: 12px;
+      align-items: start;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
     }}
     .todo-meta div {{
       min-width: 0;
-      border-top: 1px solid var(--line);
-      padding-top: 7px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--card-inner-bg);
+      padding: 8px;
+      text-align: center;
     }}
     .todo-meta span {{
       display: block;
@@ -1466,11 +1681,16 @@ def render_dashboard(root: Path) -> str:
       white-space: nowrap;
     }}
     .todo-meta strong {{
-      display: block;
+      display: flex;
+      justify-content: center;
       color: var(--text);
       font-size: 13px;
       font-weight: 600;
       overflow-wrap: anywhere;
+    }}
+    .todo-meta .pill {{
+      margin: 0 auto;
+      width: auto;
     }}
     .requirement-board {{
       display: grid;
@@ -1483,13 +1703,13 @@ def render_dashboard(root: Path) -> str:
     }}
     .requirement-stats div {{
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 10px 12px;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 12px;
     }}
-    .requirement-stats div.ok {{ border-color: #adddc1; background: var(--ok-soft); }}
-    .requirement-stats div.warn {{ border-color: #ecc47c; background: var(--warn-soft); }}
-    .requirement-stats div.muted {{ background: #f1f4f8; }}
+    .requirement-stats div.ok {{ border-color: var(--ok-border); background: var(--card-bg); }}
+    .requirement-stats div.warn {{ border-color: var(--warn-border); background: var(--card-bg); }}
+    .requirement-stats div.muted {{ background: var(--card-bg); }}
     .requirement-stats span {{
       display: block;
       color: var(--muted);
@@ -1502,12 +1722,12 @@ def render_dashboard(root: Path) -> str:
     }}
     .requirement-group {{
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
+      border-radius: var(--radius);
+      background: var(--card-bg);
       overflow: hidden;
     }}
-    .requirement-group.ok {{ border-color: #c8ead6; }}
-    .requirement-group.warn {{ border-color: #f2d49a; }}
+    .requirement-group.ok {{ border-color: var(--ok-border); }}
+    .requirement-group.warn {{ border-color: var(--warn-border); }}
     .requirement-group.muted {{ border-color: var(--line); }}
     .requirement-group-head {{
       display: flex;
@@ -1515,12 +1735,12 @@ def render_dashboard(root: Path) -> str:
       justify-content: space-between;
       gap: 12px;
       border-bottom: 1px solid var(--line);
-      padding: 10px 12px;
+      padding: 12px 14px;
       background: var(--surface-soft);
     }}
-    .requirement-group.ok .requirement-group-head {{ background: var(--ok-soft); }}
-    .requirement-group.warn .requirement-group-head {{ background: var(--warn-soft); }}
-    .requirement-group.muted .requirement-group-head {{ background: #f1f4f8; }}
+    .requirement-group.ok .requirement-group-head {{ background: var(--surface-tint); }}
+    .requirement-group.warn .requirement-group-head {{ background: var(--surface-tint); }}
+    .requirement-group.muted .requirement-group-head {{ background: var(--surface-tint); }}
     .requirement-group-head h3 {{
       margin: 0;
       font-size: 15px;
@@ -1540,7 +1760,8 @@ def render_dashboard(root: Path) -> str:
       gap: 12px;
       min-width: 0;
       border-bottom: 1px solid var(--line);
-      padding: 12px;
+      background: var(--card-inner-bg);
+      padding: 14px;
     }}
     .requirement-card:last-child {{ border-bottom: 0; }}
     .requirement-id {{
@@ -1569,7 +1790,7 @@ def render_dashboard(root: Path) -> str:
     .requirement-meta span {{
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: var(--surface-soft);
+      background: var(--card-bg);
       color: var(--muted);
       padding: 2px 7px;
       font-size: 12px;
@@ -1585,9 +1806,9 @@ def render_dashboard(root: Path) -> str:
       gap: 12px;
       align-items: center;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 12px;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 14px;
       min-width: 0;
     }}
     .task-title {{
@@ -1614,13 +1835,19 @@ def render_dashboard(root: Path) -> str:
       gap: 8px;
       min-width: 0;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
+      border-radius: var(--radius);
+      background: var(--card-inner-bg);
       padding: 8px;
+      color: inherit;
+      text-decoration: none;
     }}
-    .task-checkpoint.ok {{ border-color: #adddc1; background: var(--ok-soft); }}
-    .task-checkpoint.warn {{ border-color: #ecc47c; background: var(--warn-soft); }}
-    .task-checkpoint.danger {{ border-color: #f0b8b2; background: var(--danger-soft); }}
+    a.task-checkpoint:hover {{
+      border-color: var(--accent-border);
+      text-decoration: none;
+    }}
+    .task-checkpoint.ok {{ border-color: var(--ok-border); background: var(--card-inner-bg); }}
+    .task-checkpoint.warn {{ border-color: var(--warn-border); background: var(--card-inner-bg); }}
+    .task-checkpoint.danger {{ border-color: var(--danger-border); background: var(--card-inner-bg); }}
     .task-checkpoint span {{
       color: var(--muted);
       font-size: 12px;
@@ -1634,14 +1861,13 @@ def render_dashboard(root: Path) -> str:
     .record-list {{ display: grid; gap: 10px; }}
     .record-card {{
       border: 1px solid var(--line);
-      border-left-width: 4px;
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 12px;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 14px;
     }}
-    .record-card.ok {{ border-left-color: var(--ok); }}
-    .record-card.warn {{ border-left-color: #d9901f; }}
-    .record-card.danger {{ border-left-color: var(--danger); }}
+    .record-card.ok,
+    .record-card.warn,
+    .record-card.danger {{ border-color: var(--line); }}
     .record-card p {{ margin-bottom: 10px; overflow-wrap: anywhere; }}
     .record-head {{
       display: flex;
@@ -1661,7 +1887,7 @@ def render_dashboard(root: Path) -> str:
       align-items: center;
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface);
+      background: var(--card-inner-bg);
       color: var(--muted);
       padding: 2px 8px;
       font-size: 12px;
@@ -1674,8 +1900,8 @@ def render_dashboard(root: Path) -> str:
     }}
     .record-grid div {{
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--surface);
+      border-radius: var(--radius);
+      background: var(--card-inner-bg);
       padding: 8px;
       min-width: 0;
     }}
@@ -1698,7 +1924,7 @@ def render_dashboard(root: Path) -> str:
     }}
     .bubble {{
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: var(--radius);
       padding: 10px 12px;
       min-width: 0;
     }}
@@ -1713,19 +1939,20 @@ def render_dashboard(root: Path) -> str:
       overflow-wrap: anywhere;
     }}
     .bubble.user {{
-      background: var(--surface);
+      background: var(--revision-user-bg);
+      border-color: var(--revision-user-border);
     }}
     .bubble.result.ok {{
-      background: var(--ok-soft);
-      border-color: #adddc1;
+      background: var(--revision-result-bg);
+      border-color: var(--revision-result-border);
     }}
     .bubble.result.warn {{
       background: var(--warn-soft);
-      border-color: #ecc47c;
+      border-color: var(--warn-border);
     }}
     .bubble.result.danger {{
       background: var(--danger-soft);
-      border-color: #f0b8b2;
+      border-color: var(--danger-border);
     }}
     .meta-tags {{
       display: flex;
@@ -1736,7 +1963,7 @@ def render_dashboard(root: Path) -> str:
     .meta-tags span {{
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface);
+      background: var(--card-inner-bg);
       color: var(--muted);
       padding: 2px 8px;
       font-size: 12px;
@@ -1749,16 +1976,15 @@ def render_dashboard(root: Path) -> str:
     }}
     .artifact-summary-card {{
       border: 1px solid var(--line);
-      border-left-width: 4px;
-      border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 12px;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 14px;
       min-width: 0;
     }}
-    .artifact-summary-card.ok {{ border-left-color: var(--ok); }}
-    .artifact-summary-card.warn {{ border-left-color: #d9901f; }}
-    .artifact-summary-card.danger {{ border-left-color: var(--danger); }}
-    .artifact-summary-card.muted {{ border-left-color: var(--line); }}
+    .artifact-summary-card.ok,
+    .artifact-summary-card.warn,
+    .artifact-summary-card.danger {{ border-color: var(--line); }}
+    .artifact-summary-card.muted {{ border-color: var(--line); }}
     .artifact-summary-head {{
       display: flex;
       align-items: center;
@@ -1779,6 +2005,31 @@ def render_dashboard(root: Path) -> str:
     .artifact-main strong {{
       font-size: 18px;
     }}
+    .artifact-link {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-sm);
+      background: var(--card-inner-bg);
+      color: var(--accent);
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      text-decoration: none;
+      white-space: nowrap;
+    }}
+    .artifact-link:hover {{
+      border-color: var(--accent-border);
+      background: var(--accent-soft);
+      text-decoration: none;
+    }}
+    .artifact-links {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }}
     .artifact-meta {{
       display: flex;
       flex-wrap: wrap;
@@ -1788,10 +2039,113 @@ def render_dashboard(root: Path) -> str:
     .artifact-meta span {{
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface-soft);
+      background: var(--card-inner-bg);
       color: var(--muted);
       padding: 1px 7px;
       font-size: 12px;
+    }}
+    .artifact-preview-list {{
+      display: grid;
+      gap: 12px;
+    }}
+    .artifact-preview {{
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      overflow: hidden;
+      scroll-margin-top: 18px;
+    }}
+    .artifact-preview[open] {{
+      border-color: var(--accent-border);
+    }}
+    .artifact-preview summary {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 16px;
+      cursor: pointer;
+      background: var(--surface-tint);
+    }}
+    .artifact-preview-head {{
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }}
+    .artifact-preview-state {{
+      flex: 0 0 auto;
+    }}
+    .artifact-preview summary span {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }}
+    .artifact-preview summary strong {{
+      min-width: 0;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }}
+    .artifact-markdown {{
+      display: grid;
+      gap: 12px;
+      padding: 20px;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.72;
+    }}
+    .artifact-markdown > :first-child {{ margin-top: 0; }}
+    .artifact-markdown h2,
+    .artifact-markdown h3,
+    .artifact-markdown h4,
+    .artifact-markdown h5 {{
+      margin: 14px 0 0;
+      line-height: 1.35;
+      font-weight: 700;
+      color: var(--text);
+    }}
+    .artifact-markdown h2 {{ font-size: 18px; }}
+    .artifact-markdown h3 {{ font-size: 17px; }}
+    .artifact-markdown h4 {{ font-size: 16px; }}
+    .artifact-markdown h5 {{ font-size: 15px; }}
+    .artifact-markdown h4,
+    .artifact-markdown h5 {{
+      padding-top: 4px;
+    }}
+    .artifact-markdown p {{
+      margin: 0;
+      overflow-wrap: anywhere;
+    }}
+    .artifact-markdown ul {{
+      margin: 0;
+      padding-left: 22px;
+    }}
+    .artifact-markdown blockquote {{
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      border-left: 4px solid var(--accent-border);
+      border-radius: 8px;
+      background: var(--card-inner-bg);
+      color: #536579;
+      padding: 12px 14px;
+    }}
+    .artifact-markdown pre {{
+      margin: 0;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-tint);
+      padding: 12px;
+    }}
+    .artifact-markdown code {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }}
+    .md-table-wrap {{
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card-inner-bg);
     }}
     .eyebrow {{
       display: block;
@@ -1809,16 +2163,23 @@ def render_dashboard(root: Path) -> str:
       border: 1px solid var(--line);
       white-space: nowrap;
     }}
-    .pill.ok {{ color: var(--ok); background: var(--ok-soft); border-color: #adddc1; }}
-    .pill.warn {{ color: var(--warn); background: var(--warn-soft); border-color: #ecc47c; }}
-    .pill.danger {{ color: var(--danger); background: var(--danger-soft); border-color: #f0b8b2; }}
-    .pill.muted {{ color: var(--muted); background: #eef2f6; }}
+    .pill.ok {{ color: var(--ok); background: var(--card-inner-bg); border-color: var(--ok-border); }}
+    .pill.warn {{ color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }}
+    .pill.danger {{ color: var(--danger); background: var(--card-inner-bg); border-color: var(--danger-border); }}
+    .pill.muted {{ color: var(--muted); background: var(--surface-tint); }}
+    .status-count strong {{
+      font-weight: 650;
+    }}
+    .status-count.ok strong {{ color: var(--ok); }}
+    .status-count.warn strong {{ color: var(--warn); }}
+    .status-count.danger strong {{ color: var(--danger); }}
+    .status-count.muted strong {{ color: var(--muted); }}
     .path {{
       display: inline-block;
       max-width: 100%;
-      color: #334155;
-      background: #eef2f7;
-      border: 1px solid #d8e0eb;
+      color: #1f2937;
+      background: var(--surface-tint);
+      border: 1px solid var(--line);
       border-radius: 6px;
       padding: 2px 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1858,9 +2219,9 @@ def render_dashboard(root: Path) -> str:
       display: inline-flex;
       align-items: center;
       height: 28px;
-      border: 1px solid #c9d8ee;
+      border: 1px solid var(--accent-border);
       border-radius: 999px;
-      background: var(--surface);
+      background: var(--card-inner-bg);
       color: var(--accent);
       padding: 0 10px;
       font-size: 13px;
@@ -1873,7 +2234,7 @@ def render_dashboard(root: Path) -> str:
       top: 34px;
       left: 50%;
       bottom: -22px;
-      border-left: 2px dashed #9db5d8;
+      border-left: 2px dashed var(--accent-border);
       transform: translateX(-50%);
     }}
     .timeline-date-group:not(:last-child) .timeline-date-label::before {{
@@ -1883,23 +2244,23 @@ def render_dashboard(root: Path) -> str:
       top: 34px;
       width: 8px;
       height: 8px;
-      border-left: 2px solid #9db5d8;
-      border-top: 2px solid #9db5d8;
+      border-left: 2px solid var(--accent-border);
+      border-top: 2px solid var(--accent-border);
       transform: translateX(-50%) rotate(45deg);
     }}
     .timeline-date-items {{
       display: grid;
-      gap: 12px;
+      gap: 14px;
       min-width: 0;
     }}
     .timeline-item {{
       display: grid;
-      grid-template-columns: 68px minmax(0, 1fr);
+      grid-template-columns: 76px minmax(0, 1fr);
       gap: 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--surface);
-      padding: 14px;
+      background: var(--card-bg);
+      padding: 16px;
     }}
     .timeline-time {{
       display: flex;
@@ -1913,7 +2274,7 @@ def render_dashboard(root: Path) -> str:
       min-width: 52px;
       border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--surface-soft);
+      background: var(--card-inner-bg);
       color: var(--muted);
       font-size: 12px;
       font-weight: 650;
@@ -1932,8 +2293,8 @@ def render_dashboard(root: Path) -> str:
     }}
     .timeline-details {{
       display: grid;
-      gap: 8px;
-      margin-top: 12px;
+      gap: 10px;
+      margin-top: 14px;
     }}
     .timeline-detail {{
       display: grid;
@@ -1942,8 +2303,16 @@ def render_dashboard(root: Path) -> str:
       align-items: start;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--surface-soft);
-      padding: 9px 10px;
+      background: var(--card-inner-bg);
+      padding: 10px 12px;
+    }}
+    .timeline-detail.body {{
+      grid-template-columns: 1fr;
+      background: var(--card-inner-bg);
+    }}
+    .timeline-detail.body span {{
+      color: var(--accent);
+      font-weight: 700;
     }}
     .timeline-detail span {{
       color: var(--muted);
@@ -1953,7 +2322,7 @@ def render_dashboard(root: Path) -> str:
     }}
     .timeline-detail p {{
       margin: 0;
-      color: #334155;
+      color: #1f2937;
       font-size: 13px;
       overflow-wrap: anywhere;
     }}
@@ -1962,11 +2331,12 @@ def render_dashboard(root: Path) -> str:
     }}
     .empty {{
       color: var(--muted);
-      background: var(--surface-soft);
+      background: var(--card-bg);
       border: 1px dashed var(--line);
       border-radius: 8px;
-      padding: 14px;
+      padding: 18px;
       margin-bottom: 0;
+      text-align: center;
     }}
     @media (max-width: 960px) {{
       .shell {{ padding: 14px; }}
@@ -1991,7 +2361,18 @@ def render_dashboard(root: Path) -> str:
         border-bottom: 1px solid var(--line);
       }}
       .todo-main {{ padding: 14px; }}
-      .todo-meta {{ grid-template-columns: 1fr; }}
+      .todo-main {{
+        display: grid;
+        grid-template-columns: 1fr;
+      }}
+      .todo-action {{
+        justify-content: flex-start;
+        align-self: start;
+      }}
+      .todo-meta {{
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }}
       .requirement-stats {{ grid-template-columns: 1fr; }}
       .requirement-card {{ grid-template-columns: 1fr; }}
       .task-card {{ grid-template-columns: 1fr; }}
@@ -2023,6 +2404,7 @@ def render_dashboard(root: Path) -> str:
           <a href="#issues">待决策问题</a>
           <a href="#tasks">任务进展</a>
           <a href="#artifacts">阶段产物状态</a>
+          <a href="#artifact-content">产物内容</a>
           <a href="#requirements">需求纳入决策</a>
           <a href="#revisions">用户修订</a>
           <a href="#decisions">决策归档</a>
@@ -2040,7 +2422,6 @@ def render_dashboard(root: Path) -> str:
           </div>
           {render_pipeline(stage, next_step, pending_artifacts, open_issues)}
           <div class="metrics">
-            {metric("需要人工关注", str(attention), "attention", "#todos")}
             {metric("待决策问题", str(open_issues), "", "#issues")}
             {metric("待处理修订", str(pending_revisions), "", "#revisions")}
             {metric("待审核/需修改产物", str(pending_artifacts), "", "#artifacts")}
@@ -2073,6 +2454,11 @@ def render_dashboard(root: Path) -> str:
           {render_artifact_board(root, artifact_items)}
         </section>
 
+        <section class="panel" id="artifact-content">
+          {section_heading("产物内容", "主要阶段产物的 HTML 预览；点击上方入口会跳到对应内容。")}
+          {render_artifact_previews(root, artifact_items)}
+        </section>
+
         <section class="panel" id="requirements">
           {section_heading("需求纳入决策", "需求是否纳入、暂不纳入或仍待决策。")}
           {render_requirements(requirements)}
@@ -2103,6 +2489,15 @@ def render_dashboard(root: Path) -> str:
       pageLayout.classList.toggle('outline-collapsed');
       outlineToggle.textContent = pageLayout.classList.contains('outline-collapsed') ? '›' : '‹';
     }});
+    function openArtifactTarget() {{
+      if (!location.hash) return;
+      const target = document.querySelector(location.hash);
+      if (target && target.matches('details.artifact-preview')) {{
+        target.open = true;
+      }}
+    }}
+    window.addEventListener('hashchange', openArtifactTarget);
+    openArtifactTarget();
   </script>
 </body>
 </html>
