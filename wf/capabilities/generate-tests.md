@@ -24,7 +24,7 @@
 - 符合 `contracts/test-report.md` 的 `output/test-reports/T-XXX.md`。
 - 审核状态：`待审核`。
 - 完成事件：用户确认 `output/test-reports/T-XXX.md` 后，由运行时产生 `tests_generated` 或 `all_tests_completed`。
-- 可选：写入 `ISSUES.md` 的测试阶段问题。
+- 条件触发必写：命中“不确定项”规则时，必须写入 `ISSUES.md` 的测试阶段问题。
 
 ## 规则
 

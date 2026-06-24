@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -40,8 +41,9 @@ VALID_NEXT = {
     "fix-workspace",
 }
 
-VALID_REVIEW = {"待审核", "需修改", "已确认"}
+VALID_REVIEW = {"待审核", "需修改", "需更新", "已确认"}
 REVIEW_RE = re.compile(r"^- 状态：(.+?)\s*$", re.MULTILINE)
+REVIEW_FIELD_RE = re.compile(r"^- (状态|审核人|审核时间|修订来源)：(.*?)\s*$", re.MULTILINE)
 TASK_RE = re.compile(r"\bT-\d{3}\b")
 Q_RE = re.compile(r"\bQ-\d{3}\b")
 R_RE = re.compile(r"\bR-\d{3}\b")
@@ -67,6 +69,112 @@ TEST_REPORT_REQUIRED_SECTIONS = [
     "结论",
 ]
 TEST_REPORT_BLOCKING_STATUSES = {"阻塞", "待补充", "已生成，未通过"}
+VALID_REQUIREMENT_DECISIONS = {"纳入", "暂不纳入", "待决策"}
+DESIGN_REQUIRED_TASK_FIELDS = [
+    "技术目标",
+    "关联需求",
+    "依赖",
+    "模块架构",
+    "接口/方法定义",
+    "数据结构",
+    "设计约束",
+    "影响范围",
+]
+ACTION_IMPACT_ALIASES = {
+    "design-solution": ["output/analysis.md", "analysis", "需求分析", "后续设计", "技术设计"],
+    "generate-specs": [
+        "output/analysis.md",
+        "output/design.md",
+        "analysis",
+        "design",
+        "需求分析",
+        "技术方案",
+        "技术设计",
+        "规格生成",
+    ],
+    "implement-code": [
+        "output/analysis.md",
+        "output/design.md",
+        "output/specs/",
+        "analysis",
+        "design",
+        "spec",
+        "需求分析",
+        "技术方案",
+        "规格",
+        "实现",
+        "T-",
+    ],
+    "generate-tests": [
+        "output/specs/",
+        "output/reports/",
+        "output/design.md",
+        "spec",
+        "report",
+        "规格",
+        "代码报告",
+        "实现报告",
+        "测试",
+        "T-",
+    ],
+}
+ANALYSIS_UNRESOLVED_PATTERNS = [
+    "待确认",
+    "不明确",
+    "是否",
+    "可能",
+    "以外部文档为准",
+    "需产品确认",
+    "需后端确认",
+    "需埋点确认",
+    "后续细化",
+    "口径",
+    "字段缺失",
+    "范围不清",
+]
+DESIGN_VIEW_REASON_PATTERNS = [
+    "不适用",
+    "无代码仓库",
+    "纯配置",
+    "纯文案",
+    "纯样式",
+    "纯资源",
+    "无法确定",
+    "不涉及",
+]
+DESIGN_INTERFACE_BEHAVIOR_PATTERNS = [
+    "兼容",
+    "兜底",
+    "异常",
+    "幂等",
+    "去重",
+    "分支",
+    "空参数",
+    "无参",
+    "返回空",
+    "阈值",
+    "状态切换",
+    "重试",
+    "降级",
+]
+DESIGN_INTERFACE_UNCHANGED_PATTERNS = [
+    "未变化",
+    "无变化",
+    "无改动",
+    "不改动",
+    "复用现有",
+    "调用现有",
+    "已有接口",
+]
+DESIGN_INTERFACE_CHANGE_HINTS = [
+    "新增",
+    "修改",
+    "变更",
+    "调整",
+    "改造",
+    "签名",
+    "职责变化",
+]
 
 
 @dataclass
@@ -99,6 +207,26 @@ def section(text: str, heading: str) -> str:
     if next_match:
         rest = rest[: next_match.start()]
     return rest.strip("\n")
+
+
+def task_detail_blocks(text: str) -> list[tuple[str, str]]:
+    body = section(text, "任务详情")
+    matches = list(TASK_DETAIL_HEADING_RE.finditer(body))
+    blocks: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        blocks.append((match.group(1), body[match.start() : end]))
+    return blocks
+
+
+def bold_field_block(block: str, label: str) -> str:
+    pattern = rf"(?ms)^\*\*{re.escape(label)}：\*\*\s*\n(.*?)(?=\n\*\*[^*\n]+：\*\*|\n### |\Z)"
+    match = re.search(pattern, block)
+    return match.group(1).strip() if match else ""
+
+
+def bold_field_exists(block: str, label: str) -> bool:
+    return bool(re.search(rf"(?m)^\*\*{re.escape(label)}：\*\*", block))
 
 
 def parse_context_field(text: str, name: str) -> str:
@@ -207,6 +335,24 @@ def review_status(path: Path) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def review_fields(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    return {key: value.strip() for key, value in REVIEW_FIELD_RE.findall(read_text(path))}
+
+
+def parse_review_time(value: str) -> datetime | None:
+    value = value.strip()
+    if not value:
+        return None
+    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"]:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def report_path(root: Path, task_id: str) -> Path:
     return root / "output" / "reports" / f"{task_id}.md"
 
@@ -248,6 +394,14 @@ def parse_design_tasks(root: Path) -> dict[str, str]:
         if len(cells) >= 2 and TASK_RE.fullmatch(cells[0]):
             tasks[cells[0]] = cells[1]
     return tasks
+
+
+def task_ids_from_artifacts(root: Path) -> list[str]:
+    ids: set[str] = set(parse_design_tasks(root))
+    for dirname in ["specs", "reports", "test-reports"]:
+        for path in (root / "output" / dirname).glob("T-*.md"):
+            ids.add(path.stem)
+    return sorted(ids)
 
 
 def duplicate_ids(path: Path, pattern: re.Pattern[str]) -> list[str]:
@@ -529,6 +683,64 @@ def validate_analysis_structure(root: Path, issues: list[Issue]) -> None:
         "按文件名顺序分配 PRD 编号，并按编号升序列出",
         level="warn",
     )
+    validate_analysis_requirement_decisions(text, file, review_status(path), issues)
+    validate_analysis_unresolved_phrases(text, file, issues)
+
+
+def validate_analysis_requirement_decisions(
+    text: str,
+    file: str,
+    status: str | None,
+    issues: list[Issue],
+) -> None:
+    unresolved: list[str] = []
+    invalid: list[str] = []
+    for cells in table_row_cells(text, "功能需求"):
+        if len(cells) < 5 or not REQ_RE.fullmatch(cells[0]):
+            continue
+        decision = cells[4].strip()
+        if not decision or decision == "待决策":
+            unresolved.append(cells[0])
+        elif decision not in VALID_REQUIREMENT_DECISIONS:
+            invalid.append(f"{cells[0]}={decision}")
+    if status == "已确认" and unresolved:
+        add(
+            issues,
+            "fail",
+            "analysis_confirmed_with_unresolved_requirement_decisions",
+            file,
+            f"需求分析已确认，但需求纳入决策表仍有未完成决策：{', '.join(unresolved)}",
+            "用户确认前必须将每条需求处理方式填写为 `纳入` 或 `暂不纳入`；`待决策` 需求需先写入并处理 ISSUES.md",
+        )
+    if status == "已确认" and invalid:
+        add(
+            issues,
+            "fail",
+            "analysis_confirmed_with_invalid_requirement_decisions",
+            file,
+            f"需求分析已确认，但需求纳入决策表存在非法处理方式：{', '.join(invalid)}",
+            "处理方式只能是 `纳入`、`暂不纳入` 或 `待决策`；确认前不得保留非法值",
+        )
+
+
+def validate_analysis_unresolved_phrases(text: str, file: str, issues: list[Issue]) -> None:
+    body = "\n".join(section(text, heading) for heading in ["需求概要", "功能需求"])
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or Q_RE.search(stripped):
+            continue
+        matched = [pattern for pattern in ANALYSIS_UNRESOLVED_PATTERNS if pattern in stripped]
+        if not matched:
+            continue
+        add(
+            issues,
+            "warn",
+            "analysis_unresolved_phrase",
+            file,
+            f"需求分析正文疑似包含未决策内容：{stripped[:80]}",
+            "将影响后续设计、规格或实现的存疑点写入 ISSUES.md，并在正文中只引用对应 Q-XXX",
+        )
+        return
 
 
 def validate_design_structure(root: Path, issues: list[Issue]) -> None:
@@ -557,6 +769,102 @@ def validate_design_structure(root: Path, issues: list[Issue]) -> None:
         "新增任务详情按编号插入，不要插到详情顶部",
         level="warn",
     )
+    validate_design_view(text, file, issues)
+    validate_design_task_detail_fields(text, file, review_status(path), issues)
+    validate_design_interface_definitions(text, file, issues)
+
+
+def validate_design_view(text: str, file: str, issues: list[Issue]) -> None:
+    body = section(text, "设计视图")
+    if not body:
+        add(
+            issues,
+            "warn",
+            "design_view_missing",
+            file,
+            "技术方案缺少设计视图",
+            "按 contracts/design.md 增加 `## 设计视图`，提供 Mermaid 图或明确不适用原因",
+        )
+        return
+    has_mermaid_block = bool(re.search(r"(?ms)^```mermaid\s*\n.+?\n```", body))
+    has_reason = any(pattern in body for pattern in DESIGN_VIEW_REASON_PATTERNS)
+    if "mermaid" in body.lower() and not has_mermaid_block:
+        add(
+            issues,
+            "warn",
+            "design_view_mermaid_fence_invalid",
+            file,
+            "设计视图中的 Mermaid 图未使用合法 fenced code block",
+            "使用 ```mermaid 开始、``` 结束，确保 dashboard.html 可以渲染图形",
+        )
+    if not has_mermaid_block and not has_reason:
+        add(
+            issues,
+            "warn",
+            "design_view_without_mermaid_or_reason",
+            file,
+            "设计视图缺少 Mermaid 图或明确不适用原因",
+            "补充任务依赖图、类关系图、交互图等 Mermaid 图；确实不适用时写明原因",
+        )
+
+
+def validate_design_task_detail_fields(text: str, file: str, status: str | None, issues: list[Issue]) -> None:
+    level = "fail" if status == "已确认" else "warn"
+    missing_type = "design_confirmed_missing_required_task_field" if status == "已确认" else "design_missing_required_task_field"
+    legacy_type = "design_uses_legacy_requirement_summary"
+    for task_id, block in task_detail_blocks(text):
+        missing = [field for field in DESIGN_REQUIRED_TASK_FIELDS if not bold_field_exists(block, field)]
+        if missing:
+            add(
+                issues,
+                level,
+                missing_type,
+                file,
+                f"{task_id} 任务详情缺少必需字段：{', '.join(missing)}",
+                "按 contracts/design.md 补齐技术目标、关联需求、依赖、模块架构、接口/方法定义、数据结构、设计约束和影响范围",
+            )
+        if bold_field_exists(block, "需求摘要"):
+            add(
+                issues,
+                level,
+                legacy_type,
+                file,
+                f"{task_id} 任务详情仍使用旧字段：需求摘要",
+                "将 `需求摘要` 改为 `技术目标`，只描述本任务可验证的技术结果",
+            )
+
+
+def validate_design_interface_definitions(text: str, file: str, issues: list[Issue]) -> None:
+    for task_id, block in task_detail_blocks(text):
+        body = bold_field_block(block, "接口/方法定义")
+        if not body:
+            continue
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped in {"无", "- 无", "暂无", "- 暂无"}:
+                continue
+            if any(pattern in stripped for pattern in DESIGN_INTERFACE_BEHAVIOR_PATTERNS):
+                add(
+                    issues,
+                    "warn",
+                    "design_interface_contains_behavior_detail",
+                    file,
+                    f"{task_id} 的接口/方法定义疑似包含行为规则：{stripped[:80]}",
+                    "接口/方法定义只保留本次需求新增、修改、签名变化或职责变化的文件、签名、职责、入参和出参；分支、兼容、兜底、异常、幂等、去重等写入模块架构、数据结构或设计约束",
+                )
+                return
+            has_unchanged_marker = any(pattern in stripped for pattern in DESIGN_INTERFACE_UNCHANGED_PATTERNS)
+            has_change_hint = any(pattern in stripped for pattern in DESIGN_INTERFACE_CHANGE_HINTS)
+            if has_unchanged_marker and not has_change_hint:
+                add(
+                    issues,
+                    "warn",
+                    "design_interface_contains_unchanged_item",
+                    file,
+                    f"{task_id} 的接口/方法定义疑似列入未变化接口：{stripped[:80]}",
+                    "接口/方法定义只列本次需求相关且有变化的接口/方法；未变化的既有接口、复用调用和上下游依赖放入模块架构或影响范围说明",
+                )
+                return
 
 
 def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
@@ -672,6 +980,46 @@ def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
             )
 
 
+def add_stale_downstream_issue(root: Path, issues: list[Issue], upstream: Path, downstream: Path, reason: str) -> None:
+    add(
+        issues,
+        "fail",
+        "stale_downstream_artifact",
+        rel(downstream, root),
+        f"{rel(downstream, root)} 已确认，但上游 {rel(upstream, root)} {reason}",
+        "运行 wf/tools/invalidate_downstream.py 标记下游产物为需更新，并重建 CONTEXT.md",
+    )
+
+
+def downstream_is_stale(root: Path, upstream: Path, downstream: Path) -> str:
+    upstream_status = review_status(upstream)
+    downstream_status = review_status(downstream)
+    if downstream_status != "已确认" or not upstream.exists() or not downstream.exists():
+        return ""
+    if upstream_status != "已确认":
+        return f"当前状态为 {upstream_status or '未设置'}"
+    upstream_time = parse_review_time(review_fields(upstream).get("审核时间", ""))
+    downstream_time = parse_review_time(review_fields(downstream).get("审核时间", ""))
+    if upstream_time and downstream_time and upstream_time > downstream_time:
+        return "审核时间晚于下游产物"
+    return ""
+
+
+def validate_downstream_freshness(root: Path, issues: list[Issue]) -> None:
+    output = root / "output"
+    for task_id in task_ids_from_artifacts(root):
+        spec = output / "specs" / f"{task_id}.md"
+        report = report_path(root, task_id)
+        test_report = test_report_path(root, task_id)
+        for downstream in [report, test_report]:
+            reason = downstream_is_stale(root, spec, downstream)
+            if reason:
+                add_stale_downstream_issue(root, issues, spec, downstream, reason)
+        reason = downstream_is_stale(root, report, test_report)
+        if reason:
+            add_stale_downstream_issue(root, issues, report, test_report, reason)
+
+
 def add(issue_list: list[Issue], level: str, typ: str, file: str, message: str, suggestion: str = "") -> None:
     issue_list.append(Issue(level, typ, file, message, suggestion))
 
@@ -696,6 +1044,35 @@ def issue_field(block: str, label: str) -> str:
 
 def issue_resolved(block: str) -> bool:
     return "状态：已解决" in block
+
+
+def issue_impacts_action(root: Path, action: str | None, impact: str, context_stage: str) -> bool:
+    if action in {None, "resolve-decision", "fix-workspace", "status"}:
+        return False
+    if context_stage == "blocked_by_decision":
+        return True
+    aliases = list(ACTION_IMPACT_ALIASES.get(action, []))
+    if action == "review-artifact":
+        aliases.extend(item.split("（", 1)[0] for item in pending_artifacts(root))
+    normalized = impact.lower()
+    return any(alias and alias.lower() in normalized for alias in aliases)
+
+
+def validate_open_issues(root: Path, issues: list[Issue], action: str | None, context_stage: str) -> None:
+    for qid, block in issue_blocks(root):
+        if issue_resolved(block):
+            continue
+        title = block.splitlines()[0].strip("# ").strip() if block.splitlines() else qid
+        impact = issue_field(block, "影响")
+        direct = issue_impacts_action(root, action, impact, context_stage)
+        add(
+            issues,
+            "fail" if direct else "warn",
+            "blocking_open_issue" if direct else "open_issue",
+            "ISSUES.md",
+            f"存在待决策问题：{title}",
+            "先处理对应 Q-XXX，再推进当前动作" if direct else "处理对应 Q-XXX 后再推进受影响的下游动作",
+        )
 
 
 def validate(root: Path, action: str | None = None, target: str | None = None) -> dict:
@@ -792,7 +1169,10 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
     validate_revisions_structure(root, issues)
     validate_journal_structure(root, issues)
     validate_changelog_structure(root, issues)
+    if action != "resolve-decision":
+        validate_open_issues(root, issues, action, stage)
     validate_stage_artifact_structure(root, issues)
+    validate_downstream_freshness(root, issues)
 
     tasks = parse_design_tasks(root)
     for task_id in tasks:
@@ -880,9 +1260,19 @@ def validate_action(root: Path, action: str, issues: list[Issue], context: str, 
             add(issues, "fail", "missing_code_repo", "CONTEXT.md", "代码仓库路径缺失或不可访问")
         implemented = []
         for task_id in parse_design_tasks(root):
+            spec = output / "specs" / f"{task_id}.md"
             report = report_path(root, task_id)
             test_report = test_report_path(root, task_id)
             if review_status(report) == "已确认" and review_status(test_report) != "已确认":
+                if review_status(spec) != "已确认":
+                    add(
+                        issues,
+                        "fail",
+                        "missing_confirmed_spec_for_tests",
+                        rel(spec, root),
+                        f"{task_id} 已实现但规格不存在或未确认，不能生成测试",
+                        "先生成并确认对应规格，再执行 generate-tests",
+                    )
                 implemented.append(task_id)
         if not implemented:
             add(issues, "fail", "no_implemented_untested_task", "CONTEXT.md", "没有已实现但未测试的任务")

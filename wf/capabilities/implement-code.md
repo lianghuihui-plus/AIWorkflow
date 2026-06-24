@@ -22,7 +22,7 @@
 - 符合 `contracts/code-report.md` 的 `output/reports/T-XXX.md`。
 - 审核状态：`待审核`。
 - 完成事件：用户确认 `output/reports/T-XXX.md` 后，由运行时产生 `task_implemented` 或 `all_tasks_implemented`。
-- 可选：写入 `ISSUES.md` 的实现阶段问题。
+- 条件触发必写：命中“不确定项”规则时，必须写入 `ISSUES.md` 的实现阶段问题。
 
 ## 规则
 

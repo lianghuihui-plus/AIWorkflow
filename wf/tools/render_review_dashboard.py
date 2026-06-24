@@ -159,7 +159,7 @@ def project_name(root: Path, context: str) -> str:
 
 
 def markdown_field(block: str, label: str) -> str:
-    pattern = rf"^\s*-?\s*\*\*{re.escape(label)}：\*\*\s*(.*?)\s*$"
+    pattern = rf"^[ \t]*-?[ \t]*\*\*{re.escape(label)}：\*\*[ \t]*(.*?)[ \t]*$"
     match = re.search(pattern, block, re.MULTILINE)
     return match.group(1).strip() if match else ""
 
@@ -237,12 +237,7 @@ def render_pipeline(stage: str, next_step: str, pending_artifacts: int, open_iss
             </div>
             """
         )
-    block_note = (
-        f'<div class="pipeline-note danger">当前存在 {open_issues} 个待决策问题，流程需要人工处理后继续。</div>'
-        if blocked and open_issues
-        else ""
-    )
-    return '<div class="pipeline">' + "\n".join(steps) + "</div>" + block_note
+    return '<div class="pipeline">' + "\n".join(steps) + "</div>"
 
 
 def workspace_status(root: Path) -> tuple[str, list[str]]:
@@ -455,7 +450,7 @@ def parse_requirement_decisions(root: Path) -> list[RequirementDecision]:
 def status_class(status: str) -> str:
     if status in {"已确认", "已处理", "结构完整"}:
         return "ok"
-    if status == "待审核" or status == "待决策" or status == "待处理":
+    if status == "待审核" or status == "需更新" or status == "待决策" or status == "待处理":
         return "warn"
     if status in {"需修改", "阻塞", "缺少必要文件"}:
         return "danger"
@@ -484,9 +479,17 @@ def pill(value: str) -> str:
 def todo_meta(items: list[tuple[str, str]]) -> str:
     blocks = ""
     for label, value in items:
+        meta_class = "todo-meta-status" if label == "状态" else "todo-meta-text"
         value_html = pill(value) if label == "状态" else esc(value)
-        blocks += f"<div><span>{esc(label)}</span><strong>{value_html}</strong></div>"
+        blocks += f'<div class="{meta_class}"><span>{esc(label)}</span><strong>{value_html}</strong></div>'
     return f'<div class="todo-meta">{blocks}</div>'
+
+
+def todo_summary(text: str, limit: int = 96) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
 
 
 def metric(label: str, value: str, tone: str = "", href: str = "") -> str:
@@ -532,9 +535,12 @@ def render_action_queue(root: Path, artifact_items: list[Artifact], issues: list
                 <article class="todo-card warn">
                   <div class="todo-type"><strong>待决策</strong><span>{esc(issue.stage)}</span></div>
                   <div class="todo-main">
-                    <h3>{esc(issue.issue_id)} — {esc(issue.title)}</h3>
-                    <p>{esc(issue.problem)}</p>
-                    {todo_meta([("状态", issue.status), ("影响", issue.impact), ("AI 建议", issue.suggestion)])}
+                    <div class="todo-content">
+                      <h3>{esc(issue.issue_id)} — {esc(issue.title)}</h3>
+                      <p>{esc(todo_summary(issue.problem))}</p>
+                      {todo_meta([("状态", issue.status), ("阶段", issue.stage)])}
+                    </div>
+                    <div class="todo-action"><a class="artifact-link todo-action-link" href="#issues">去处理</a></div>
                   </div>
                 </article>
                 """
@@ -569,7 +575,7 @@ def artifact_group_order() -> list[str]:
 
 
 def artifact_status_summary(items: list[Artifact]) -> dict[str, int]:
-    summary = {"已确认": 0, "待审核": 0, "需修改": 0, "未设置": 0}
+    summary = {"已确认": 0, "待审核": 0, "需修改": 0, "需更新": 0, "未设置": 0}
     for item in items:
         summary[item.status] = summary.get(item.status, 0) + 1
     return summary
@@ -580,7 +586,7 @@ def stage_summary_tone(items: list[Artifact]) -> str:
         return "muted"
     if any(item.status == "需修改" for item in items):
         return "danger"
-    if any(item.status == "待审核" for item in items):
+    if any(item.status in {"待审核", "需更新"} for item in items):
         return "warn"
     if all(item.status == "已确认" for item in items):
         return "ok"
@@ -624,7 +630,7 @@ def render_artifact_board(root: Path, items: list[Artifact]) -> str:
             body = f"""
               <div class="artifact-main">
                 <strong>{confirmed}/{len(group_items)} 已确认</strong>
-                {pill("已确认" if confirmed == len(group_items) else "待审核" if summary.get("待审核", 0) else "未设置")}
+                {pill("已确认" if confirmed == len(group_items) else "待审核" if summary.get("待审核", 0) else "需更新" if summary.get("需更新", 0) else "未设置")}
               </div>
               <div class="artifact-meta">{chips}</div>
               <div class="artifact-links">{"".join(artifact_link(item.path, root, item.task_id if item.task_id != "—" else rel(item.path, root)) for item in group_items)}</div>
@@ -980,6 +986,7 @@ def render_markdown_preview(text: str) -> str:
     list_items: list[str] = []
     quote_lines: list[str] = []
     in_code = False
+    code_language = ""
     code_lines: list[str] = []
     index = 0
 
@@ -1002,8 +1009,18 @@ def render_markdown_preview(text: str) -> str:
             quote_lines = []
 
     def flush_code() -> None:
-        nonlocal code_lines
-        html_parts.append("<pre><code>" + esc("\n".join(code_lines)) + "</code></pre>")
+        nonlocal code_language, code_lines
+        code = "\n".join(code_lines)
+        if code_language == "mermaid":
+            html_parts.append(
+                '<div class="diagram-card">'
+                '<button class="diagram-open" type="button" aria-label="全屏查看图表">全屏查看</button>'
+                '<div class="mermaid">' + esc(code) + "</div>"
+                "</div>"
+            )
+        else:
+            html_parts.append("<pre><code>" + esc(code) + "</code></pre>")
+        code_language = ""
         code_lines = []
 
     while index < len(lines):
@@ -1018,6 +1035,7 @@ def render_markdown_preview(text: str) -> str:
                 in_code = False
             else:
                 in_code = True
+                code_language = stripped[3:].strip().split(" ", 1)[0].lower()
             index += 1
             continue
         if in_code:
@@ -1581,7 +1599,7 @@ def render_dashboard(root: Path) -> str:
     .todo-card {{
       display: grid;
       grid-template-columns: 128px minmax(0, 1fr);
-      gap: 14px;
+      gap: 0;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--card-bg);
@@ -1612,14 +1630,14 @@ def render_dashboard(root: Path) -> str:
     .todo-main {{
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
-      gap: 14px;
-      align-items: center;
+      gap: 16px;
+      align-items: start;
       min-width: 0;
-      padding: 14px 14px 14px 0;
+      padding: 16px;
     }}
     .todo-content {{
       display: grid;
-      gap: 9px;
+      gap: 10px;
       min-width: 0;
     }}
     .todo-action {{
@@ -1659,34 +1677,55 @@ def render_dashboard(root: Path) -> str:
     }}
     .todo-meta {{
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 12px;
-      align-items: start;
+      align-items: stretch;
       border-top: 1px solid var(--line);
-      padding-top: 10px;
+      padding-top: 12px;
     }}
     .todo-meta div {{
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      align-items: start;
       min-width: 0;
+      min-height: 74px;
       border: 1px solid var(--line);
       border-radius: var(--radius-sm);
       background: var(--card-inner-bg);
-      padding: 8px;
-      text-align: center;
+      padding: 10px;
     }}
     .todo-meta span {{
       display: block;
       color: var(--muted);
       font-size: 12px;
-      margin-bottom: 2px;
+      margin-bottom: 6px;
       white-space: nowrap;
     }}
     .todo-meta strong {{
       display: flex;
-      justify-content: center;
+      align-items: flex-start;
+      justify-content: flex-start;
       color: var(--text);
       font-size: 13px;
       font-weight: 600;
+      line-height: 1.45;
       overflow-wrap: anywhere;
+      text-align: left;
+    }}
+    .todo-meta .todo-meta-status {{
+      align-items: center;
+      justify-items: center;
+      text-align: center;
+    }}
+    .todo-meta .todo-meta-status strong {{
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }}
+    .todo-meta .todo-meta-text strong {{
+      max-height: 4.4em;
+      overflow: auto;
+      scrollbar-width: thin;
     }}
     .todo-meta .pill {{
       margin: 0 auto;
@@ -2141,6 +2180,105 @@ def render_dashboard(root: Path) -> str:
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
     }}
+    .artifact-markdown .diagram-card {{
+      position: relative;
+      display: grid;
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card-inner-bg);
+      min-width: 0;
+    }}
+    .artifact-markdown .diagram-card .mermaid {{
+      margin: 0;
+      overflow-x: auto;
+      padding: 16px;
+      text-align: center;
+    }}
+    .diagram-open {{
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 1;
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--accent);
+      padding: 4px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }}
+    .diagram-open:hover {{
+      background: var(--accent-soft);
+    }}
+    .diagram-viewer {{
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      display: none;
+      background: rgba(12, 18, 28, 0.88);
+      color: white;
+    }}
+    .diagram-viewer.open {{
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }}
+    .diagram-viewer-toolbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(12, 18, 28, 0.94);
+    }}
+    .diagram-viewer-title {{
+      font-weight: 700;
+    }}
+    .diagram-viewer-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .diagram-viewer-actions button {{
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      padding: 6px 10px;
+      font-weight: 650;
+      cursor: pointer;
+    }}
+    .diagram-viewer-actions button:hover {{
+      background: rgba(255, 255, 255, 0.18);
+    }}
+    .diagram-stage {{
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }}
+    .diagram-stage.dragging {{
+      cursor: grabbing;
+    }}
+    .diagram-canvas {{
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform-origin: center center;
+      min-width: 240px;
+      min-height: 160px;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      background: white;
+      padding: 24px;
+      color: var(--text);
+    }}
+    .diagram-canvas svg {{
+      max-width: none;
+      height: auto;
+    }}
     .md-table-wrap {{
       overflow-x: auto;
       border: 1px solid var(--line);
@@ -2305,6 +2443,7 @@ def render_dashboard(root: Path) -> str:
       border-radius: 8px;
       background: var(--card-inner-bg);
       padding: 10px 12px;
+      min-width: 0;
     }}
     .timeline-detail.body {{
       grid-template-columns: 1fr;
@@ -2318,13 +2457,17 @@ def render_dashboard(root: Path) -> str:
       color: var(--muted);
       font-size: 12px;
       font-weight: 650;
-      white-space: nowrap;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }}
     .timeline-detail p {{
       margin: 0;
       color: #1f2937;
       font-size: 13px;
+      min-width: 0;
       overflow-wrap: anywhere;
+      word-break: break-word;
     }}
     .timeline-detail.single {{
       grid-template-columns: 1fr;
@@ -2372,6 +2515,13 @@ def render_dashboard(root: Path) -> str:
       .todo-meta {{
         grid-template-columns: 1fr;
         gap: 8px;
+      }}
+      .todo-meta div {{
+        min-height: 0;
+      }}
+      .todo-meta .todo-meta-text strong {{
+        max-height: none;
+        overflow: visible;
       }}
       .requirement-stats {{ grid-template-columns: 1fr; }}
       .requirement-card {{ grid-template-columns: 1fr; }}
@@ -2482,6 +2632,20 @@ def render_dashboard(root: Path) -> str:
       </div>
     </div>
   </div>
+  <div class="diagram-viewer" id="diagramViewer" aria-hidden="true">
+    <div class="diagram-viewer-toolbar">
+      <div class="diagram-viewer-title">图表查看</div>
+      <div class="diagram-viewer-actions">
+        <button id="diagramZoomOut" type="button">-</button>
+        <button id="diagramZoomReset" type="button">重置</button>
+        <button id="diagramZoomIn" type="button">+</button>
+        <button id="diagramClose" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="diagram-stage" id="diagramStage">
+      <div class="diagram-canvas" id="diagramCanvas"></div>
+    </div>
+  </div>
   <script>
     const pageLayout = document.getElementById('pageLayout');
     const outlineToggle = document.getElementById('outlineToggle');
@@ -2498,6 +2662,100 @@ def render_dashboard(root: Path) -> str:
     }}
     window.addEventListener('hashchange', openArtifactTarget);
     openArtifactTarget();
+
+    const diagramViewer = document.getElementById('diagramViewer');
+    const diagramStage = document.getElementById('diagramStage');
+    const diagramCanvas = document.getElementById('diagramCanvas');
+    const diagramClose = document.getElementById('diagramClose');
+    const diagramZoomIn = document.getElementById('diagramZoomIn');
+    const diagramZoomOut = document.getElementById('diagramZoomOut');
+    const diagramZoomReset = document.getElementById('diagramZoomReset');
+    const diagramState = {{ scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 }};
+
+    function applyDiagramTransform() {{
+      diagramCanvas.style.transform = `translate(calc(-50% + ${{diagramState.x}}px), calc(-50% + ${{diagramState.y}}px)) scale(${{diagramState.scale}})`;
+    }}
+
+    function resetDiagramTransform() {{
+      diagramState.scale = 1;
+      diagramState.x = 0;
+      diagramState.y = 0;
+      applyDiagramTransform();
+    }}
+
+    function openDiagramViewer(source) {{
+      const diagram = source.closest('.diagram-card')?.querySelector('.mermaid');
+      if (!diagram) return;
+      diagramCanvas.innerHTML = '';
+      const rendered = diagram.querySelector('svg');
+      diagramCanvas.appendChild((rendered || diagram).cloneNode(true));
+      diagramViewer.classList.add('open');
+      diagramViewer.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+      resetDiagramTransform();
+    }}
+
+    function closeDiagramViewer() {{
+      diagramViewer.classList.remove('open');
+      diagramViewer.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+      diagramCanvas.innerHTML = '';
+    }}
+
+    function zoomDiagram(delta) {{
+      diagramState.scale = Math.min(4, Math.max(0.25, diagramState.scale + delta));
+      applyDiagramTransform();
+    }}
+
+    document.querySelectorAll('.diagram-open').forEach((button) => {{
+      button.addEventListener('click', () => openDiagramViewer(button));
+    }});
+    diagramClose.addEventListener('click', closeDiagramViewer);
+    diagramZoomIn.addEventListener('click', () => zoomDiagram(0.2));
+    diagramZoomOut.addEventListener('click', () => zoomDiagram(-0.2));
+    diagramZoomReset.addEventListener('click', resetDiagramTransform);
+    diagramStage.addEventListener('wheel', (event) => {{
+      event.preventDefault();
+      zoomDiagram(event.deltaY < 0 ? 0.12 : -0.12);
+    }}, {{ passive: false }});
+    diagramStage.addEventListener('pointerdown', (event) => {{
+      diagramState.dragging = true;
+      diagramState.startX = event.clientX;
+      diagramState.startY = event.clientY;
+      diagramState.originX = diagramState.x;
+      diagramState.originY = diagramState.y;
+      diagramStage.classList.add('dragging');
+      diagramStage.setPointerCapture(event.pointerId);
+    }});
+    diagramStage.addEventListener('pointermove', (event) => {{
+      if (!diagramState.dragging) return;
+      diagramState.x = diagramState.originX + event.clientX - diagramState.startX;
+      diagramState.y = diagramState.originY + event.clientY - diagramState.startY;
+      applyDiagramTransform();
+    }});
+    diagramStage.addEventListener('pointerup', (event) => {{
+      diagramState.dragging = false;
+      diagramStage.classList.remove('dragging');
+      diagramStage.releasePointerCapture(event.pointerId);
+    }});
+    diagramStage.addEventListener('pointercancel', () => {{
+      diagramState.dragging = false;
+      diagramStage.classList.remove('dragging');
+    }});
+    diagramViewer.addEventListener('click', (event) => {{
+      if (event.target === diagramViewer) closeDiagramViewer();
+    }});
+    window.addEventListener('keydown', (event) => {{
+      if (event.key === 'Escape' && diagramViewer.classList.contains('open')) closeDiagramViewer();
+    }});
+  </script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({{
+      startOnLoad: true,
+      securityLevel: 'strict',
+      theme: 'neutral'
+    }});
   </script>
 </body>
 </html>

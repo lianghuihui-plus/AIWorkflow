@@ -80,6 +80,8 @@ python <wf-skill-dir>/tools/render_review_dashboard.py <workspace>
 写入后应将对应文件标记为已修改。如果后续判断依赖该文件内容，必须重新读取。
 
 - 写入阶段产物后，如果后续需要使用该产物内容，必须重新读取目标产物。
+- 写入或实质更新 `output/specs/T-XXX.md` 后，必须运行 `tools/invalidate_downstream.py <workspace> output/specs/T-XXX.md`，将对应已确认的代码报告和测试报告标记为 `需更新`。
+- 写入或实质更新 `output/reports/T-XXX.md` 后，必须运行 `tools/invalidate_downstream.py <workspace> output/reports/T-XXX.md`，将对应已确认的测试报告标记为 `需更新`。
 - 修改产物审核状态后，应运行或等效执行 `rebuild_context.py`，然后重新读取 `CONTEXT.md`。
 - 写入 `ISSUES.md` 后，如果本事务还需要读取待决策数量或目标问题，必须重新读取 `ISSUES.md`。
 - 写入 `REVISIONS.md` 后，如果本事务还要处理修订列表，必须重新读取 `REVISIONS.md`。
@@ -91,10 +93,10 @@ python <wf-skill-dir>/tools/render_review_dashboard.py <workspace>
 每次会改变工作空间状态的操作都视为一次工作流事务：
 
 1. 读取当前状态。
-2. 检查 `REVISIONS.md` 是否存在待处理修订；若存在，优先执行修订收敛。
-3. 执行 `tools/validate.py` 和门禁检查；可脚本化硬规则以校验器结果为准，语义判断仍由 Agent 按契约处理。
+2. 识别 `REVISIONS.md` 是否存在待处理修订；若存在，本事务目标动作应切换为修订收敛。
+3. 在执行任何产物修改、决策归档或修订收敛前，先执行 `tools/validate.py` 和门禁检查；可脚本化硬规则以校验器结果为准，语义判断仍由 Agent 按契约处理。
 4. 选择 `capabilities/` 中的一个能力；处理人工决策或修订收敛时不选择能力，改为执行对应运行时流程。
-5. 执行能力、决策处理或修订收敛。
+5. 执行能力、决策处理或修订收敛；如果第 2 步识别到待处理修订，必须优先收敛修订，不得继续原阶段能力。
 6. 写入能力产物、决策归档或修订归档。
 7. 根据产物审核状态和 `state-machine.md` 更新 `CONTEXT.md`；如只是状态快照漂移，优先通过 `rebuild_context.py` 重建。
 8. 必要时写入或解决 `ISSUES.md`。
@@ -131,6 +133,15 @@ python <wf-skill-dir>/tools/render_review_dashboard.py <workspace>
 | 任务是否已实现 | `output/reports/T-XXX.md` 存在，且审核状态为 `已确认` |
 | 任务是否已测试 | `output/test-reports/T-XXX.md` 存在，且审核状态为 `已确认` |
 | 是否停在审核阶段 | 存在任一审核状态为 `待审核` 或 `需修改` 的阶段产物 |
+
+如果上游产物已更新，受影响下游产物必须失效：
+
+| 上游产物 | 必须失效的下游产物 |
+|---|---|
+| `output/specs/T-XXX.md` | `output/reports/T-XXX.md`、`output/test-reports/T-XXX.md` |
+| `output/reports/T-XXX.md` | `output/test-reports/T-XXX.md` |
+
+失效只改动当前为 `已确认` 的下游产物：将其审核状态改为 `需更新`，清空审核人和审核时间，并在 `修订来源` 记录触发失效的上游产物。`需更新` 不是待人工审核状态，不进入 `待处理产物`；它表示下游能力需要重新执行。`tools/validate.py` 必须兜底检查上游未确认或上游审核时间晚于下游确认时间时，下游不得仍为 `已确认`。
 
 当 `CONTEXT.md` 与产物事实冲突时，以产物事实为准。运行时应进入 `blocked_by_inconsistent_state` / `fix-workspace`，并优先执行 `rebuild_context.py` 重建 `CONTEXT.md`。重建后必须再次运行 `tools/validate.py`，仍失败时不得继续阶段能力。
 

@@ -72,4 +72,4 @@
 - 修订阻塞时，目标产物审核状态保持 `需修改`，`修订来源` 指向阻塞的 R-XXX。
 - 修订阻塞如果需要人工决策，必须同步写入 `ISSUES.md` 并进入 `blocked_by_decision`。
 - 修订阻塞如果源于缺输入或状态不一致，必须进入对应的 `blocked_by_missing_input` 或 `blocked_by_inconsistent_state`。
-- 每次处理修订后必须追加 `JOURNAL.md`。
+- 修订处理后的运行时日志按 `runtime.md` 处理。
