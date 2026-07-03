@@ -55,6 +55,14 @@ def clean_table_path(value: str) -> str:
     return value.strip("`").strip()
 
 
+def list_field_values(text: str, heading: str, field: str) -> list[str]:
+    body = section(text, heading)
+    return [
+        match.group(1).strip()
+        for match in re.finditer(rf"(?m)^-\s+\*\*{re.escape(field)}：\*\*\s*(.+?)\s*$", body)
+    ]
+
+
 def title(text: str) -> str:
     first = text.splitlines()[0].strip() if text.splitlines() else "# 工作空间上下文 — 未命名"
     return first if first.startswith("# ") else "# 工作空间上下文 — 未命名"
@@ -130,7 +138,11 @@ def test_files(root: Path, task_id: str) -> str:
     if not path.exists():
         return "—"
     files = []
-    for value in table_column_values(read_text(path), "已生成单元测试", 3):
+    text = read_text(path)
+    values = list_field_values(text, "已生成单元测试", "测试文件")
+    if not values:
+        values = table_column_values(text, "已生成单元测试", 3)
+    for value in values:
         cleaned = clean_table_path(value)
         if cleaned and cleaned not in files:
             files.append(cleaned)

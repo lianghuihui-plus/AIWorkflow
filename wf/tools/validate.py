@@ -69,6 +69,10 @@ TEST_REPORT_REQUIRED_SECTIONS = [
     "结论",
 ]
 TEST_REPORT_BLOCKING_STATUSES = {"阻塞", "待补充", "已生成，未通过"}
+TEST_REPORT_WIDE_TABLE_HEADERS = {
+    ("#", "行为", "测试点", "测试文件", "状态", "说明"),
+    ("#", "验证项", "命令/方式", "结果", "说明"),
+}
 VALID_REQUIREMENT_DECISIONS = {"纳入", "暂不纳入", "待决策"}
 DESIGN_REQUIRED_TASK_FIELDS = [
     "技术目标",
@@ -319,12 +323,58 @@ def table_row_cells(text: str, heading: str) -> list[list[str]]:
     return rows
 
 
+def numbered_item_values(text: str, heading: str) -> list[str]:
+    body = section(text, heading)
+    return re.findall(r"(?m)^###\s+(\d+)\.\s+", body)
+
+
+def test_report_wide_table_headings(text: str) -> list[str]:
+    headings: list[str] = []
+    for heading in ["已生成单元测试", "未生成单元测试", "辅助验证记录"]:
+        body = section(text, heading)
+        for line in body.splitlines():
+            if not line.startswith("|"):
+                continue
+            cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+            if cells in TEST_REPORT_WIDE_TABLE_HEADERS:
+                headings.append(heading)
+                break
+    return headings
+
+
+def section_has_empty_test_statement_with_entries(text: str, heading: str) -> bool:
+    body = section(text, heading)
+    if not numbered_item_values(text, heading):
+        return False
+    empty_markers = {
+        "未生成单元测试": "全部目标行为已生成单元测试",
+        "辅助验证记录": "未执行辅助验证",
+    }
+    marker = empty_markers.get(heading)
+    return bool(marker and marker in body)
+
+
+def test_report_list_field_values(text: str, heading: str, field: str) -> list[str]:
+    body = section(text, heading)
+    matches = list(re.finditer(r"(?m)^###\s+\d+\.\s+.*$", body))
+    values: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        block = body[match.start() : end]
+        field_match = re.search(rf"(?m)^-\s+\*\*{re.escape(field)}：\*\*\s*(.+?)\s*$", block)
+        if field_match:
+            values.append(field_match.group(1).strip())
+    return values
+
+
 def test_report_blocking_statuses(text: str) -> list[str]:
     statuses: list[str] = []
-    for heading in ["已生成单元测试", "未生成单元测试"]:
-        for cells in table_row_cells(text, heading):
-            if len(cells) >= 5 and cells[4] in TEST_REPORT_BLOCKING_STATUSES:
-                statuses.append(cells[4])
+    for status in test_report_list_field_values(text, "已生成单元测试", "状态"):
+        if status in TEST_REPORT_BLOCKING_STATUSES:
+            statuses.append(status)
+    for status in test_report_list_field_values(text, "未生成单元测试", "状态"):
+        if status in TEST_REPORT_BLOCKING_STATUSES:
+            statuses.append(status)
     return statuses
 
 
@@ -939,25 +989,35 @@ def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
             ("未生成单元测试", "test_report_not_generated_order_invalid", "未生成单元测试序号必须按升序排列"),
             ("辅助验证记录", "test_report_verification_order_invalid", "辅助验证记录序号必须按升序排列"),
         ]:
-            ids = table_number_values(text, heading)
+            ids = numbered_item_values(text, heading)
             validate_ordered_numbers(
                 issues,
                 ids,
                 file,
                 typ,
                 message,
-                "新增条目追加到表格末尾并使用下一个序号",
+                "新增条目追加到对应章节末尾并使用下一个序号",
                 level="warn",
             )
-            if table_has_placeholder_with_entries(text, heading):
+            if section_has_empty_test_statement_with_entries(text, heading):
                 add(
                     issues,
                     "fail",
                     "test_report_placeholder_with_entries",
                     file,
-                    f"{heading} 同时存在占位行和真实条目",
-                    "存在真实条目时删除 `—` 占位行",
+                    f"{heading} 同时存在无内容结论和真实条目",
+                    "存在真实条目时删除无内容结论，只保留条目列表",
                 )
+        wide_table_headings = test_report_wide_table_headings(text)
+        if wide_table_headings:
+            add(
+                issues,
+                "fail",
+                "test_report_wide_long_text_table",
+                file,
+                f"测试报告仍使用长文本横向表格：{', '.join(wide_table_headings)}",
+                "按 contracts/test-report.md 改为 `### 序号. 标题` + 字段列表块",
+            )
         legacy_sections = [heading for heading in ["测试清单", "未覆盖行为"] if has_heading(text, heading)]
         if legacy_sections:
             add(

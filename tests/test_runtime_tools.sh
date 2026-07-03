@@ -165,6 +165,48 @@ demo
 
 ## 已生成单元测试
 
+### 1. normal
+
+- **行为：** normal
+- **测试点：** branch
+- **测试文件：** \`tests/Demo.test.ts\`
+- **状态：** 已生成
+- **说明：** demo
+
+## 未生成单元测试
+
+全部目标行为已生成单元测试。
+
+## 辅助验证记录
+
+未执行辅助验证：缺少可用测试执行脚本。
+
+## 结论
+
+已生成单测
+EOF
+}
+
+write_legacy_wide_test_report() {
+  local file="$1"
+  local status="$2"
+  mkdir -p "$(dirname "$file")"
+  cat > "$file" <<EOF
+# 单元测试报告 — T-001 旧宽表格样本
+
+## 审核状态
+
+- 状态：$status
+- 审核人：
+- 审核时间：
+- 修订来源：
+
+## 任务范围
+
+demo
+
+## 已生成单元测试
+
 | # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
 |---|---|---|---|---|---|
 | 1 | normal | branch | \`tests/Demo.test.ts\` | 已生成 | demo |
@@ -183,7 +225,7 @@ demo
 
 ## 结论
 
-已生成单测
+旧表格样本仅用于 dashboard 兼容渲染测试。
 EOF
 }
 
@@ -983,6 +1025,14 @@ test_design_diagram_labels_require_chinese_explanations() {
   grep -q "图中的说明文字必须使用中文" "$capability" || fail "design capability should require Chinese diagram explanations"
 }
 
+test_test_report_avoids_wide_long_text_tables() {
+  local contract="$ROOT_DIR/wf/contracts/test-report.md"
+  local capability="$ROOT_DIR/wf/capabilities/generate-tests.md"
+
+  grep -q "测试报告的长文本记录不得使用横向 Markdown 表格" "$contract" || fail "test report contract should avoid wide tables for long records"
+  grep -q "用列表块记录每个测试项" "$capability" || fail "generate-tests capability should require compact list blocks"
+}
+
 test_readme_describes_current_framework_loop() {
   local readme="$ROOT_DIR/README.md"
 
@@ -1260,21 +1310,21 @@ demo
 
 ## 已生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| 1 | normal | branch | `tests/Demo.test.ts` | 已生成 | demo |
+### 1. normal
+
+- **行为：** normal
+- **测试点：** branch
+- **测试文件：** `tests/Demo.test.ts`
+- **状态：** 已生成
+- **说明：** demo
 
 ## 未生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
+全部目标行为已生成单元测试。
 
 ## 辅助验证记录
 
-| # | 验证项 | 命令/方式 | 结果 | 说明 |
-|---|---|---|---|---|
-| — | 未执行 | — | 未执行 | 缺少可用测试执行脚本 |
+未执行辅助验证：缺少可用测试执行脚本。
 
 ## 结论
 
@@ -1528,6 +1578,7 @@ classDiagram
 EOF
   write_review_status "$ws/output/specs/T-001.md" "已确认"
   write_review_status "$ws/output/reports/T-001.md" "待审核"
+  write_legacy_wide_test_report "$ws/output/test-reports/T-001.md" "待审核"
 
   python3 "$ROOT_DIR/wf/tools/render_review_dashboard.py" "$ws" >/dev/null
 
@@ -1577,6 +1628,10 @@ EOF
   grep -q "pointerdown" "$ws/dashboard.html" || fail "expected diagram drag handler"
   grep -q "wheel" "$ws/dashboard.html" || fail "expected diagram wheel zoom handler"
   grep -q "md-table-wrap" "$ws/dashboard.html" || fail "expected markdown table rendering"
+  grep -q "test-record-list" "$ws/dashboard.html" || fail "expected wide test report tables to render as readable record lists"
+  if grep -q "<th>行为</th><th>测试点</th><th>测试文件</th><th>状态</th><th>说明</th>" "$ws/dashboard.html"; then
+    fail "wide test report table should not render as a narrow markdown table"
+  fi
   grep -q "<h5>REQ-001 — 示例需求标题</h5>" "$ws/dashboard.html" || fail "expected deep requirement heading rendering"
   grep -q ".artifact-markdown h3 { font-size: 17px;" "$ws/dashboard.html" || fail "expected artifact h3 heading size"
   grep -q ".artifact-markdown h4 { font-size: 16px;" "$ws/dashboard.html" || fail "expected artifact h4 heading size"
@@ -1592,7 +1647,9 @@ EOF
   fi
   grep -q "待审核" "$ws/dashboard.html" || fail "expected pending review status"
   grep -q "todo-type" "$ws/dashboard.html" || fail "expected redesigned todo type column"
-  grep -q "todo-meta" "$ws/dashboard.html" || fail "expected redesigned todo metadata"
+  if grep -q "todo-meta" "$ws/dashboard.html"; then
+    fail "manual todo queue should stay compact and avoid detail metadata"
+  fi
   grep -q -- '--card-bg:' "$ws/dashboard.html" || fail "expected shared card background token"
   grep -q '<span class="pill warn">待审核</span>' "$ws/dashboard.html" || fail "expected unified pending review status pill"
   grep -q -- '--warn: #d6a100;' "$ws/dashboard.html" || fail "expected bright yellow pending review color"
@@ -1617,23 +1674,33 @@ if not (html.index("示例待决策需求") < html.index("示例纳入需求") <
     raise SystemExit(1)
 PY
   grep -q "revision-dialog" "$ws/dashboard.html" || fail "expected dialog-style revision rendering"
+  grep -q '<details class="panel collapsible-panel" id="revisions">' "$ws/dashboard.html" || fail "expected revisions section to be collapsible"
+  grep -q '<details class="panel collapsible-panel" id="decisions">' "$ws/dashboard.html" || fail "expected decisions section to be collapsible"
+  grep -q '<details class="panel collapsible-panel" id="journal">' "$ws/dashboard.html" || fail "expected journal section to be collapsible"
+  grep -q "openHashTargetPanel" "$ws/dashboard.html" || fail "expected hash navigation to open collapsible sections"
+  grep -q "collapsible-body" "$ws/dashboard.html" || fail "expected collapsible panel body wrapper"
   grep -q -- '--revision-user-bg:' "$ws/dashboard.html" || fail "expected distinct user revision bubble color token"
   grep -q -- '--revision-result-bg:' "$ws/dashboard.html" || fail "expected distinct revision result bubble color token"
   grep -q "用户意见" "$ws/dashboard.html" || fail "expected revision user opinion label"
   grep -q "已更新" "$ws/dashboard.html" || fail "expected revision handled result"
   grep -q "处理时间：2026-06-10 11:00" "$ws/dashboard.html" || fail "expected handled revision time"
-  python3 - "$ws/dashboard.html" <<'PY' || fail "expected revisions to render in reverse order"
+  python3 - "$ws/dashboard.html" <<'PY' || fail "expected revisions, decisions, and journal to render in natural order"
 from pathlib import Path
 import sys
 
 html = Path(sys.argv[1]).read_text()
-if html.index("R-002") > html.index("R-001"):
+if html.index("R-001") > html.index("R-002"):
+    raise SystemExit(1)
+if html.index("决策 01") > html.index("决策 05"):
+    raise SystemExit(1)
+if html.index("日志 01") > html.index("日志 09"):
     raise SystemExit(1)
 PY
   grep -q "决策 01" "$ws/dashboard.html" || fail "expected full changelog, not recent-only entries"
   grep -q "日志 01" "$ws/dashboard.html" || fail "expected full journal, not recent-only entries"
   grep -q "timeline-date-group" "$ws/dashboard.html" || fail "expected grouped timeline rendering"
   grep -q "border-left: 2px dashed" "$ws/dashboard.html" || fail "expected dashed timeline arrows"
+  grep -q "timeline-arrow-head" "$ws/dashboard.html" || fail "expected timeline arrows to point in natural order"
   grep -q "timeline-detail" "$ws/dashboard.html" || fail "expected structured timeline details"
   grep -q "timeline-detail body" "$ws/dashboard.html" || fail "expected readable timeline body detail style"
   grep -q ">问题<" "$ws/dashboard.html" || fail "expected plain changelog detail label"
@@ -1901,24 +1968,43 @@ demo
 
 ## 已生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| 2 | second | demo | `b.test.ts` | 已生成 | demo |
-| 1 | first | demo | `a.test.ts` | 已生成 | demo |
+### 2. second
+
+- **行为：** second
+- **测试点：** demo
+- **测试文件：** `b.test.ts`
+- **状态：** 已生成
+- **说明：** demo
+
+### 1. first
+
+- **行为：** first
+- **测试点：** demo
+- **测试文件：** `a.test.ts`
+- **状态：** 已生成
+- **说明：** demo
 
 ## 未生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
-| 1 | edge | demo | — | 待补充 | reason |
+全部目标行为已生成单元测试。
+
+### 1. edge
+
+- **行为：** edge
+- **测试点：** demo
+- **测试文件：** —
+- **状态：** 待补充
+- **说明：** reason
 
 ## 辅助验证记录
 
-| # | 验证项 | 命令/方式 | 结果 | 说明 |
-|---|---|---|---|---|
-| — | 未执行 | — | 未执行 | 缺少脚本 |
-| 1 | 单元测试执行 | `run-unit.sh` | 失败 | demo |
+未执行辅助验证：缺少脚本。
+
+### 1. 单元测试执行
+
+- **命令/方式：** `run-unit.sh`
+- **结果：** 失败
+- **说明：** demo
 
 ## 结论
 
@@ -1999,21 +2085,21 @@ demo
 
 ## 已生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| 1 | normal | branch | `demo.test.ts` | 已生成 | demo |
+### 1. normal
+
+- **行为：** normal
+- **测试点：** branch
+- **测试文件：** `demo.test.ts`
+- **状态：** 已生成
+- **说明：** demo
 
 ## 未生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| — | 无 | — | — | — | 全部目标行为已生成单元测试 |
+全部目标行为已生成单元测试。
 
 ## 辅助验证记录
 
-| # | 验证项 | 命令/方式 | 结果 | 说明 |
-|---|---|---|---|---|
-| — | 未执行 | — | 未执行 | 缺少可用测试执行脚本 |
+未执行辅助验证：缺少可用测试执行脚本。
 
 ## 结论
 
@@ -2025,6 +2111,16 @@ EOF
   if echo "$out" | grep -q "test_report_"; then
     fail "expected new test report structure to pass test report validation"
   fi
+}
+
+test_validator_rejects_wide_test_report_tables() {
+  local ws="$TMP_DIR/wide-test-report"
+  write_base_workspace "$ws"
+  write_legacy_wide_test_report "$ws/output/test-reports/T-001.md" "待审核"
+
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "fail"
+  echo "$out" | grep -q "test_report_wide_long_text_table" || fail "expected wide test report table failure"
 }
 
 test_validator_rejects_confirmed_blocking_test_report() {
@@ -2046,21 +2142,31 @@ demo
 
 ## 已生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| 1 | normal | branch | `demo.test.ts` | 已生成，未通过 | assertion failed |
+### 1. normal
+
+- **行为：** normal
+- **测试点：** branch
+- **测试文件：** `demo.test.ts`
+- **状态：** 已生成，未通过
+- **说明：** assertion failed
 
 ## 未生成单元测试
 
-| # | 行为 | 测试点 | 测试文件 | 状态 | 说明 |
-|---|---|---|---|---|---|
-| 1 | edge | edge | — | 阻塞 | 需要决策 |
+### 1. edge
+
+- **行为：** edge
+- **测试点：** edge
+- **测试文件：** —
+- **状态：** 阻塞
+- **说明：** 需要决策
 
 ## 辅助验证记录
 
-| # | 验证项 | 命令/方式 | 结果 | 说明 |
-|---|---|---|---|---|
-| 1 | 单元测试执行 | `run-unit.sh` | 失败 | demo |
+### 1. 单元测试执行
+
+- **命令/方式：** `run-unit.sh`
+- **结果：** 失败
+- **说明：** demo
 
 ## 结论
 
@@ -2112,6 +2218,7 @@ test_validator_warns_for_behavior_detail_in_design_interface_definitions
 test_validator_warns_for_unchanged_item_in_design_interface_definitions
 test_design_contract_uses_technical_task_sections
 test_design_diagram_labels_require_chinese_explanations
+test_test_report_avoids_wide_long_text_tables
 test_readme_describes_current_framework_loop
 test_generate_specs_reads_technical_design_fields
 test_validator_allows_decision_resolution_with_pending_revision_artifact
@@ -2128,6 +2235,7 @@ test_validator_journal_requires_date_archive_order
 test_validator_detects_ordered_artifact_drift
 test_validator_rejects_legacy_test_report_structure
 test_validator_accepts_new_test_report_structure_with_missing_scripts
+test_validator_rejects_wide_test_report_tables
 test_validator_rejects_confirmed_blocking_test_report
 test_validator_requires_output_subdirectories
 test_wf_init_agent_template_uses_rendered_coding_rules

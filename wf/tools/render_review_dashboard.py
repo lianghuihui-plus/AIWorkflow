@@ -418,8 +418,7 @@ def parse_timeline(root: Path, name: str, limit: int | None = None) -> list[Time
             body = date_body[log_match.end() : log_end]
             details = [plain_markdown(line[2:]) for line in body.splitlines() if line.startswith("- ")]
             entries.append(TimelineEntry(date_match.group(1), log_match.group(1), plain_markdown(log_match.group(2)), details))
-    ordered = entries[::-1]
-    return ordered if limit is None else ordered[:limit]
+    return entries if limit is None else entries[:limit]
 
 
 def parse_requirement_decisions(root: Path) -> list[RequirementDecision]:
@@ -476,22 +475,6 @@ def pill(value: str) -> str:
     return f'<span class="pill {status_class(value)}">{esc(value)}</span>'
 
 
-def todo_meta(items: list[tuple[str, str]]) -> str:
-    blocks = ""
-    for label, value in items:
-        meta_class = "todo-meta-status" if label == "状态" else "todo-meta-text"
-        value_html = pill(value) if label == "状态" else esc(value)
-        blocks += f'<div class="{meta_class}"><span>{esc(label)}</span><strong>{value_html}</strong></div>'
-    return f'<div class="todo-meta">{blocks}</div>'
-
-
-def todo_summary(text: str, limit: int = 96) -> str:
-    text = " ".join(text.split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
 def metric(label: str, value: str, tone: str = "", href: str = "") -> str:
     tone_class = f" {tone}" if tone else ""
     body = f"<span>{esc(label)}</span><strong>{esc(value)}</strong>"
@@ -502,6 +485,17 @@ def metric(label: str, value: str, tone: str = "", href: str = "") -> str:
 
 def section_heading(title: str, note: str) -> str:
     return f'<div class="section-heading"><h2>{esc(title)}</h2><p>{esc(note)}</p></div>'
+
+
+def collapsible_section(section_id: str, title: str, note: str, content: str) -> str:
+    return f"""
+        <details class="panel collapsible-panel" id="{esc(section_id)}">
+          <summary>{section_heading(title, note)}</summary>
+          <div class="collapsible-body">
+            {content}
+          </div>
+        </details>
+    """
 
 
 def empty(message: str) -> str:
@@ -516,15 +510,11 @@ def render_action_queue(root: Path, artifact_items: list[Artifact], issues: list
             cards.append(
                 f"""
                 <article class="todo-card {status_class(item.status)}">
-                  <div class="todo-type"><strong>产物审核</strong><span>{esc(item.kind)}</span></div>
+                  <div class="todo-type"><strong>产物审核</strong><span>{pill(item.status)}</span></div>
                   <div class="todo-main">
-                    <div class="todo-content">
-                      <h3>{path_text(path)}</h3>
-                      <p>需要人工确认该阶段产物是否可以进入后续流程。</p>
-                      {todo_meta([("状态", item.status), ("审核人", item.reviewer), ("修订来源", item.revision_source)])}
-                    </div>
-                    <div class="todo-action">{artifact_link(item.path, root, "去审核", "todo-action-link")}</div>
+                    <h3>{path_text(path)}</h3>
                   </div>
+                  <div class="todo-action">{artifact_link(item.path, root, "去审核", "todo-action-link")}</div>
                 </article>
                 """
             )
@@ -535,13 +525,9 @@ def render_action_queue(root: Path, artifact_items: list[Artifact], issues: list
                 <article class="todo-card warn">
                   <div class="todo-type"><strong>待决策</strong><span>{esc(issue.stage)}</span></div>
                   <div class="todo-main">
-                    <div class="todo-content">
-                      <h3>{esc(issue.issue_id)} — {esc(issue.title)}</h3>
-                      <p>{esc(todo_summary(issue.problem))}</p>
-                      {todo_meta([("状态", issue.status), ("阶段", issue.stage)])}
-                    </div>
-                    <div class="todo-action"><a class="artifact-link todo-action-link" href="#issues">去处理</a></div>
+                    <h3>{esc(issue.issue_id)} — {esc(issue.title)}</h3>
                   </div>
+                  <div class="todo-action"><a class="artifact-link todo-action-link" href="#issues">去处理</a></div>
                 </article>
                 """
             )
@@ -553,9 +539,8 @@ def render_action_queue(root: Path, artifact_items: list[Artifact], issues: list
                   <div class="todo-type"><strong>用户修订</strong><span>{esc(revision.kind)}</span></div>
                   <div class="todo-main">
                     <h3>{esc(revision.revision_id)} — {esc(revision.title)}</h3>
-                    <p>{esc(revision.opinion)}</p>
-                    {todo_meta([("状态", revision.status), ("目标", revision.target), ("影响", revision.impact)])}
                   </div>
+                  <div class="todo-action"><a class="artifact-link todo-action-link" href="#revisions">去处理</a></div>
                 </article>
                 """
             )
@@ -748,8 +733,7 @@ def render_revisions(revisions: list[Revision]) -> str:
     ordered = sorted(
         revisions,
         key=lambda item: (
-            0 if item.bucket == "待处理" else 1,
-            -int(item.revision_id.split("-")[1]) if "-" in item.revision_id and item.revision_id.split("-")[1].isdigit() else 0,
+            int(item.revision_id.split("-")[1]) if "-" in item.revision_id and item.revision_id.split("-")[1].isdigit() else 0,
         ),
     )
     for revision in ordered:
@@ -979,6 +963,63 @@ def table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def is_wide_test_record_table(headers: list[str]) -> bool:
+    normalized = [header.strip() for header in headers]
+    return normalized in [
+        ["#", "行为", "测试点", "测试文件", "状态", "说明"],
+        ["#", "验证项", "命令/方式", "结果", "说明"],
+    ]
+
+
+def test_record_tone(value: str) -> str:
+    if value in {"已生成", "通过"}:
+        return "ok"
+    if value in {"待补充", "未执行"}:
+        return "warn"
+    if value in {"阻塞", "失败"}:
+        return "danger"
+    return "muted"
+
+
+def render_test_record_table(headers: list[str], rows: list[list[str]]) -> str:
+    cards = []
+    for row in rows:
+        values = row + [""] * max(0, len(headers) - len(row))
+        mapping = dict(zip(headers, values))
+        number = mapping.get("#", "").strip() or "—"
+        title_label = "行为" if "行为" in mapping else "验证项"
+        title = mapping.get(title_label, "").strip() or "未命名记录"
+        status = mapping.get("状态", mapping.get("结果", "")).strip()
+        status_html = f'<span class="test-record-status {test_record_tone(status)}">{render_inline_markdown(status)}</span>' if status else ""
+        fields = []
+        for header in headers:
+            if header in {"#", title_label, "状态", "结果"}:
+                continue
+            value = mapping.get(header, "").strip()
+            if value:
+                fields.append(
+                    f"""
+                    <div class="test-record-field">
+                      <span>{esc(header)}</span>
+                      <p>{render_inline_markdown(value)}</p>
+                    </div>
+                    """
+                )
+        cards.append(
+            f"""
+            <article class="test-record-card">
+              <div class="test-record-head">
+                <span class="test-record-index">{esc(number)}</span>
+                <h4>{render_inline_markdown(title)}</h4>
+                {status_html}
+              </div>
+              <div class="test-record-fields">{"".join(fields)}</div>
+            </article>
+            """
+        )
+    return '<div class="test-record-list">' + "\n".join(cards) + "</div>"
+
+
 def render_markdown_preview(text: str) -> str:
     lines = text.splitlines()
     html_parts: list[str] = []
@@ -1065,6 +1106,9 @@ def render_markdown_preview(text: str) -> str:
             while index < len(lines) and lines[index].strip().startswith("|"):
                 rows.append(table_cells(lines[index].strip()))
                 index += 1
+            if is_wide_test_record_table(headers):
+                html_parts.append(render_test_record_table(headers, rows))
+                continue
             header_html = "".join(f"<th>{render_inline_markdown(cell)}</th>" for cell in headers)
             row_html = "".join(
                 "<tr>" + "".join(f"<td>{render_inline_markdown(cell)}</td>" for cell in row) + "</tr>"
@@ -1595,10 +1639,50 @@ def render_dashboard(root: Path) -> str:
       font-size: 14px;
       text-align: right;
     }}
+    .collapsible-panel {{
+      padding: 0;
+      overflow: hidden;
+    }}
+    .collapsible-panel > summary {{
+      list-style: none;
+      cursor: pointer;
+      padding: 18px 20px 0;
+    }}
+    .collapsible-panel > summary::-webkit-details-marker {{
+      display: none;
+    }}
+    .collapsible-panel > summary .section-heading {{
+      position: relative;
+      padding-right: 34px;
+    }}
+    .collapsible-panel > summary .section-heading::after {{
+      content: "⌄";
+      position: absolute;
+      right: 0;
+      top: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      background: var(--card-inner-bg);
+      font-size: 16px;
+      line-height: 1;
+      transition: transform 0.16s ease;
+    }}
+    .collapsible-panel[open] > summary .section-heading::after {{
+      transform: rotate(180deg);
+    }}
+    .collapsible-body {{
+      padding: 0 20px 20px;
+    }}
     .todo-list {{ display: grid; gap: 12px; }}
     .todo-card {{
       display: grid;
-      grid-template-columns: 128px minmax(0, 1fr);
+      grid-template-columns: 128px minmax(0, 1fr) auto;
       gap: 0;
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -1609,11 +1693,11 @@ def render_dashboard(root: Path) -> str:
     }}
     .todo-type {{
       display: grid;
-      align-content: start;
+      align-content: center;
       gap: 6px;
       min-width: 0;
       border-right: 1px solid var(--line);
-      padding: 14px 12px;
+      padding: 12px;
       background: var(--surface-tint);
     }}
     .todo-type strong {{
@@ -1628,24 +1712,18 @@ def render_dashboard(root: Path) -> str:
       overflow-wrap: anywhere;
     }}
     .todo-main {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 16px;
-      align-items: start;
+      display: flex;
+      align-items: center;
       min-width: 0;
-      padding: 16px;
-    }}
-    .todo-content {{
-      display: grid;
-      gap: 10px;
-      min-width: 0;
+      padding: 12px 14px;
     }}
     .todo-action {{
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      align-self: center;
       flex: 0 0 auto;
+      border-left: 1px solid var(--line);
+      padding: 12px;
     }}
     .todo-action .todo-action-link {{
       flex: 0 0 88px;
@@ -1666,70 +1744,9 @@ def render_dashboard(root: Path) -> str:
     }}
     .todo-main h3 {{
       margin: 0;
-      font-size: 15px;
-      line-height: 1.45;
+      font-size: 14px;
+      line-height: 1.4;
       overflow-wrap: anywhere;
-    }}
-    .todo-main p {{
-      margin: 0;
-      color: #1f2937;
-      overflow-wrap: anywhere;
-    }}
-    .todo-meta {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 12px;
-      align-items: stretch;
-      border-top: 1px solid var(--line);
-      padding-top: 12px;
-    }}
-    .todo-meta div {{
-      display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      align-items: start;
-      min-width: 0;
-      min-height: 74px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--card-inner-bg);
-      padding: 10px;
-    }}
-    .todo-meta span {{
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-      white-space: nowrap;
-    }}
-    .todo-meta strong {{
-      display: flex;
-      align-items: flex-start;
-      justify-content: flex-start;
-      color: var(--text);
-      font-size: 13px;
-      font-weight: 600;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
-      text-align: left;
-    }}
-    .todo-meta .todo-meta-status {{
-      align-items: center;
-      justify-items: center;
-      text-align: center;
-    }}
-    .todo-meta .todo-meta-status strong {{
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-    }}
-    .todo-meta .todo-meta-text strong {{
-      max-height: 4.4em;
-      overflow: auto;
-      scrollbar-width: thin;
-    }}
-    .todo-meta .pill {{
-      margin: 0 auto;
-      width: auto;
     }}
     .requirement-board {{
       display: grid;
@@ -1914,6 +1931,81 @@ def render_dashboard(root: Path) -> str:
       gap: 12px;
       align-items: start;
       margin-bottom: 8px;
+    }}
+    .test-record-list {{
+      display: grid;
+      gap: 12px;
+      margin: 14px 0;
+    }}
+    .test-record-card {{
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      padding: 14px;
+      min-width: 0;
+    }}
+    .test-record-head {{
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      margin-bottom: 10px;
+    }}
+    .test-record-index {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--surface-tint);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 12px;
+    }}
+    .test-record-head h4 {{
+      margin: 3px 0 0;
+      font-size: 15px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }}
+    .test-record-status {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }}
+    .test-record-status.ok {{ border-color: var(--ok-border); color: var(--ok); background: var(--ok-bg); }}
+    .test-record-status.warn {{ border-color: var(--warn-border); color: var(--warn); background: var(--warn-bg); }}
+    .test-record-status.danger {{ border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }}
+    .test-record-status.muted {{ color: var(--muted); background: var(--card-inner-bg); }}
+    .test-record-fields {{
+      display: grid;
+      gap: 8px;
+    }}
+    .test-record-field {{
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }}
+    .test-record-field span {{
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: nowrap;
+    }}
+    .test-record-field p {{
+      margin: 0;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
     }}
     .status-stack {{
       display: flex;
@@ -2375,15 +2467,16 @@ def render_dashboard(root: Path) -> str:
       border-left: 2px dashed var(--accent-border);
       transform: translateX(-50%);
     }}
-    .timeline-date-group:not(:last-child) .timeline-date-label::before {{
+    .timeline-date-group:not(:last-child) .timeline-date-label::before,
+    .timeline-arrow-head {{
       content: "";
       position: absolute;
       left: 50%;
-      top: 34px;
+      bottom: -22px;
       width: 8px;
       height: 8px;
-      border-left: 2px solid var(--accent-border);
-      border-top: 2px solid var(--accent-border);
+      border-right: 2px solid var(--accent-border);
+      border-bottom: 2px solid var(--accent-border);
       transform: translateX(-50%) rotate(45deg);
     }}
     .timeline-date-items {{
@@ -2504,30 +2597,19 @@ def render_dashboard(root: Path) -> str:
         border-bottom: 1px solid var(--line);
       }}
       .todo-main {{ padding: 14px; }}
-      .todo-main {{
-        display: grid;
-        grid-template-columns: 1fr;
-      }}
       .todo-action {{
+        border-left: 0;
+        border-top: 1px solid var(--line);
         justify-content: flex-start;
-        align-self: start;
-      }}
-      .todo-meta {{
-        grid-template-columns: 1fr;
-        gap: 8px;
-      }}
-      .todo-meta div {{
-        min-height: 0;
-      }}
-      .todo-meta .todo-meta-text strong {{
-        max-height: none;
-        overflow: visible;
       }}
       .requirement-stats {{ grid-template-columns: 1fr; }}
       .requirement-card {{ grid-template-columns: 1fr; }}
       .task-card {{ grid-template-columns: 1fr; }}
       .task-checkpoints {{ grid-template-columns: 1fr; }}
       .record-grid {{ grid-template-columns: 1fr; }}
+      .test-record-head {{ grid-template-columns: auto minmax(0, 1fr); }}
+      .test-record-status {{ grid-column: 2; justify-self: start; }}
+      .test-record-field {{ grid-template-columns: 1fr; gap: 3px; }}
       .timeline-date-group {{ grid-template-columns: 1fr; }}
       .timeline-date-label {{ min-height: auto; }}
       .timeline-date-group:not(:last-child) .timeline-date-label::after,
@@ -2614,20 +2696,11 @@ def render_dashboard(root: Path) -> str:
           {render_requirements(requirements)}
         </section>
 
-        <section class="panel" id="revisions">
-          {section_heading("用户修订", "用户提出的修改意见和收敛状态。")}
-          {render_revisions(revisions)}
-        </section>
+        {collapsible_section("revisions", "用户修订", "用户提出的修改意见和收敛状态。", render_revisions(revisions))}
 
-        <section class="panel" id="decisions">
-          {section_heading("决策归档", "已解决的人工决策记录，低频查看。")}
-          {render_timeline(changelog, "暂无决策归档。")}
-        </section>
+        {collapsible_section("decisions", "决策归档", "已解决的人工决策记录，低频查看。", render_timeline(changelog, "暂无决策归档。"))}
 
-        <section class="panel" id="journal">
-          {section_heading("工作日志", "wf 已经执行过的动作记录。")}
-          {render_timeline(journal, "暂无日志。")}
-        </section>
+        {collapsible_section("journal", "工作日志", "wf 已经执行过的动作记录。", render_timeline(journal, "暂无日志。"))}
         </main>
       </div>
     </div>
@@ -2660,8 +2733,19 @@ def render_dashboard(root: Path) -> str:
         target.open = true;
       }}
     }}
-    window.addEventListener('hashchange', openArtifactTarget);
-    openArtifactTarget();
+    function openHashTargetPanel() {{
+      if (!location.hash) return;
+      const target = document.querySelector(location.hash);
+      if (target && target.matches('details.collapsible-panel')) {{
+        target.open = true;
+      }}
+    }}
+    function openHashTargets() {{
+      openArtifactTarget();
+      openHashTargetPanel();
+    }}
+    window.addEventListener('hashchange', openHashTargets);
+    openHashTargets();
 
     const diagramViewer = document.getElementById('diagramViewer');
     const diagramStage = document.getElementById('diagramStage');
