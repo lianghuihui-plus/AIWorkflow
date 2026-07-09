@@ -35,7 +35,7 @@
 
 | 能力 | 必要条件 |
 |---|---|
-| `analyze-requirements` | `prd/` 存在，且至少包含一个 `.md`、`.txt` 或 `.pdf` 文件 |
+| `analyze-requirements` | `prd/` 存在，且至少包含一个普通文件；不按扩展名限制 PRD 输入 |
 | `design-solution` | `output/analysis.md` 存在，且审核状态为 `已确认` |
 | `generate-specs` | `output/design.md` 和 `output/analysis.md` 存在，且二者审核状态均为 `已确认` |
 | `implement-code` | `CONTEXT.md` 中存在代码仓库路径，且路径非空、不是 `无`、可访问；`output/design.md` 中每个任务都有对应 `output/specs/T-XXX.md`，且所有目标规格审核状态均为 `已确认` |

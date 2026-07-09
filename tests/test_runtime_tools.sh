@@ -251,6 +251,17 @@ test_validator_action_guard_blocks_unconfirmed_analysis() {
   assert_contains_issue_type "$out" "unconfirmed_analysis"
 }
 
+test_validator_accepts_prd_with_any_extension() {
+  local ws="$TMP_DIR/prd-any-extension"
+  write_base_workspace "$ws"
+  rm "$ws/prd/req.md"
+  printf '需求\n' > "$ws/prd/requirement.source"
+
+  local out
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --action analyze-requirements --json || true)"
+  assert_json_status "$out" "pass"
+}
+
 test_validator_blocks_confirmed_analysis_with_unresolved_requirement_decisions() {
   local ws="$TMP_DIR/analysis-unresolved-decisions"
   write_base_workspace "$ws"
@@ -1576,6 +1587,7 @@ classDiagram
   DemoViewModel --> DemoReporter : uses
 ```
 EOF
+  printf 'word document placeholder\n' > "$ws/prd/extra.docx"
   write_review_status "$ws/output/specs/T-001.md" "已确认"
   write_review_status "$ws/output/reports/T-001.md" "待审核"
   write_legacy_wide_test_report "$ws/output/test-reports/T-001.md" "待审核"
@@ -1607,6 +1619,7 @@ EOF
   grep -q 'class="metric" href="#artifacts"' "$ws/dashboard.html" || fail "expected artifact metric anchor"
   grep -q "/tmp/demo-repo" "$ws/dashboard.html" || fail "expected concrete code repo path"
   grep -q "prd/req.md" "$ws/dashboard.html" || fail "expected prd file list"
+  grep -q "prd/extra.docx" "$ws/dashboard.html" || fail "expected dashboard to list docx prd file"
   grep -q "output/analysis.md" "$ws/dashboard.html" || fail "expected artifact path"
   grep -q 'href="#artifact-output-analysis-md"' "$ws/dashboard.html" || fail "expected artifact content anchor link"
   grep -q 'id="artifact-output-analysis-md"' "$ws/dashboard.html" || fail "expected artifact preview anchor"
@@ -2198,8 +2211,15 @@ test_wf_init_agent_template_uses_rendered_coding_rules() {
   grep -q "通用编码规范正文" "$ROOT_DIR/wf-init/SKILL.md" || fail "wf-init should include non-HarmonyOS coding rules"
 }
 
+test_prd_rules_do_not_limit_file_extensions() {
+  grep -q "不限制扩展名" "$ROOT_DIR/wf-init/SKILL.md" || fail "wf-init should not limit PRD extensions"
+  grep -q "不按扩展名限制 PRD 输入" "$ROOT_DIR/wf/guards.md" || fail "guards should not limit PRD extensions"
+  grep -q "无法读取、无法抽取文本" "$ROOT_DIR/wf/capabilities/analyze-requirements.md" || fail "analysis should handle unreadable PRD files"
+}
+
 test_validator_detects_pending_artifact_mismatch
 test_validator_action_guard_blocks_unconfirmed_analysis
+test_validator_accepts_prd_with_any_extension
 test_validator_blocks_confirmed_analysis_with_unresolved_requirement_decisions
 test_invalidate_downstream_marks_confirmed_outputs_stale
 test_validator_rejects_stale_downstream_artifacts
@@ -2239,5 +2259,6 @@ test_validator_rejects_wide_test_report_tables
 test_validator_rejects_confirmed_blocking_test_report
 test_validator_requires_output_subdirectories
 test_wf_init_agent_template_uses_rendered_coding_rules
+test_prd_rules_do_not_limit_file_extensions
 
 echo "runtime tool tests passed"

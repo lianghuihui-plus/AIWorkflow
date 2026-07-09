@@ -252,7 +252,7 @@ def prd_files(root: Path) -> list[Path]:
     prd = root / "prd"
     if not prd.exists():
         return []
-    return sorted(path for path in prd.iterdir() if path.is_file() and path.suffix.lower() in {".md", ".txt", ".pdf"})
+    return sorted(path for path in prd.iterdir() if path.is_file())
 
 
 def requirement_summary(root: Path, context: str) -> str:

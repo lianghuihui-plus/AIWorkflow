@@ -1291,8 +1291,8 @@ def validate_action(root: Path, action: str, issues: list[Issue], context: str, 
     code_repo = parse_project_field(context, "代码仓库")
     if action == "analyze-requirements":
         prd = root / "prd"
-        if not prd.exists() or not any(path.suffix in {".md", ".txt", ".pdf"} for path in prd.iterdir()):
-            add(issues, "fail", "missing_prd", "prd", "prd/ 中缺少支持格式的 PRD 文件")
+        if not prd.exists() or not any(path.is_file() for path in prd.iterdir()):
+            add(issues, "fail", "missing_prd", "prd", "prd/ 中缺少 PRD 文件")
     elif action == "design-solution":
         if review_status(output / "analysis.md") != "已确认":
             add(issues, "fail", "unconfirmed_analysis", "output/analysis.md", "需求分析未确认，不能进入技术设计")
