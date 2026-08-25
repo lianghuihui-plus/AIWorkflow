@@ -126,12 +126,9 @@ class AnalysisCommandLineTests(unittest.TestCase):
             self.assertEqual(memory["items"][0]["id"], "M-001")
             self.assertIn("保存草稿", (workspace / ".aiwf/memory.md").read_text(encoding="utf-8"))
 
-            unsupported = run_cli(["prepare", "--workspace", str(workspace)])
-            self.assertEqual(unsupported.returncode, 3)
-            self.assertEqual(
-                json.loads(unsupported.stderr)["error"]["code"],
-                "stage_not_implemented",
-            )
+            next_work = run_cli(["prepare", "--workspace", str(workspace)])
+            self.assertEqual(next_work.returncode, 0, next_work.stderr)
+            self.assertEqual(json.loads(next_work.stdout)["result"]["stage"], "design")
 
     def test_blocking_question_and_decision_resume_with_successor_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

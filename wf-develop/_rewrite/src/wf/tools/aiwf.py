@@ -66,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
             command_parser.add_argument("--project-id", help="Optional stable project id.")
         elif spec.name == "prepare":
             command_parser.add_argument(
+                "--task-id",
+                help="Optional task id; the engine selects the next task by default.",
+            )
+            command_parser.add_argument(
                 "--instruction",
                 help="Optional user instruction to append to the current stage goal.",
             )

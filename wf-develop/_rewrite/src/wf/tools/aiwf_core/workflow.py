@@ -88,9 +88,15 @@ class WorkflowEngine:
 
             stage = state["current_stage"]
             if goal is None:
-                defaults = self._default_work_context(stage, instruction=instruction)
+                active_item = self._default_active_item(stage, active_item)
+                defaults = self._default_work_context(
+                    stage,
+                    active_item=active_item,
+                    instruction=instruction,
+                )
                 goal = defaults["goal"]
                 inputs = defaults["inputs"]
+                depends_on = defaults["depends_on"]
                 sources = defaults["sources"]
                 stage_guide = defaults["stage_guide"]
                 constraints = defaults["constraints"]
@@ -154,33 +160,135 @@ class WorkflowEngine:
             )
             return work
 
-    def _default_work_context(self, stage: str, *, instruction: str) -> dict[str, Any]:
-        if stage != "analysis":
+    def _default_active_item(self, stage: str, requested: str | None) -> str | None:
+        if stage in {"analysis", "design"}:
+            if requested is not None:
+                raise AIWorkflowError(
+                    code="invalid_active_item",
+                    message=f"Stage '{stage}' does not accept a task id.",
+                    exit_code=4,
+                )
+            return None
+        if stage != "specification":
+            return requested
+        tasks = self.store.read_json("tasks.json")["items"]
+        eligible = [item for item in tasks if item["status"] in {"planned", "stale"}]
+        if requested is not None:
+            if not any(item["id"] == requested for item in eligible):
+                raise AIWorkflowError(
+                    code="task_not_ready",
+                    message="Requested task is not ready for specification.",
+                    exit_code=6,
+                    details={"id": requested, "stage": stage},
+                )
+            return requested
+        if not eligible:
+            raise AIWorkflowError(
+                code="no_pending_task",
+                message="No task is ready for specification.",
+                exit_code=6,
+                details={"stage": stage},
+            )
+        return min(item["id"] for item in eligible)
+
+    def _default_work_context(
+        self,
+        stage: str,
+        *,
+        active_item: str | None,
+        instruction: str,
+    ) -> dict[str, Any]:
+        project = self.store.read_json("project.json")
+        if stage == "analysis":
+            context = {
+                "goal": "理解全部 PRD，形成可审核并能支撑技术设计的整体需求分析。",
+                "inputs": [
+                    ".aiwf/project.json",
+                    *project["prd_files"],
+                    ".aiwf/requirements.json",
+                ],
+                "sources": list(project["prd_files"]),
+                "depends_on": [],
+                "stage_guide": "references/stages/analysis.md",
+                "constraints": [
+                    "区分已知事实、合理推断和待用户决策事项。",
+                    "只有缺少答案会阻止安全推进时才创建阻塞问题。",
+                    "只写任务包指定的草稿和结果文件。",
+                ],
+            }
+        elif stage == "design":
+            analysis = self._approved_artifact("analysis")
+            context = {
+                "goal": "基于已确认需求形成可实施的整体技术设计与任务拆分。",
+                "inputs": [
+                    ".aiwf/project.json",
+                    ".aiwf/requirements.json",
+                    analysis["path"],
+                ],
+                "sources": [analysis["path"]],
+                "depends_on": [f"analysis@{analysis['approved_revision']}"],
+                "stage_guide": "references/stages/design.md",
+                "constraints": [
+                    "设计必须引用已确认需求，不重新解释或扩大业务范围。",
+                    "任务拆分表达实现边界和依赖，不预写机械测试步骤。",
+                    "只写任务包指定的草稿和结果文件。",
+                ],
+            }
+        elif stage == "specification":
+            analysis = self._approved_artifact("analysis")
+            design = self._approved_artifact("design")
+            task = next(
+                item
+                for item in self.store.read_json("tasks.json")["items"]
+                if item["id"] == active_item
+            )
+            context = {
+                "goal": f"为 {task['id']}（{task['title']}）生成可直接指导实现的任务规格。",
+                "inputs": [
+                    ".aiwf/requirements.json",
+                    ".aiwf/tasks.json",
+                    analysis["path"],
+                    design["path"],
+                ],
+                "sources": [analysis["path"], design["path"]],
+                "depends_on": [
+                    f"analysis@{analysis['approved_revision']}",
+                    f"design@{design['approved_revision']}",
+                ],
+                "stage_guide": "references/stages/specification.md",
+                "constraints": [
+                    "规格范围不得超出当前 active item。",
+                    "明确行为与边界，但不规定测试代码的具体实现。",
+                    "只写任务包指定的草稿和结果文件。",
+                ],
+            }
+        else:
             raise AIWorkflowError(
                 code="stage_not_implemented",
                 message=f"Automatic task context for stage '{stage}' is not connected yet.",
                 exit_code=3,
-                details={"stage": stage, "phase": 4},
+                details={"stage": stage, "phase": 5},
             )
-        project = self.store.read_json("project.json")
-        goal = "理解全部 PRD，形成可审核并能支撑技术设计的整体需求分析。"
+        goal = context["goal"]
         if instruction.strip():
             goal = f"{goal} 当前用户补充要求：{instruction.strip()}"
-        return {
-            "goal": goal,
-            "inputs": [
-                ".aiwf/project.json",
-                *project["prd_files"],
-                ".aiwf/requirements.json",
-            ],
-            "sources": list(project["prd_files"]),
-            "stage_guide": "references/stages/analysis.md",
-            "constraints": [
-                "区分已知事实、合理推断和待用户决策事项。",
-                "只有缺少答案会阻止安全推进时才创建阻塞问题。",
-                "只写任务包指定的草稿和结果文件。",
-            ],
-        }
+        return {**context, "goal": goal}
+
+    def _approved_artifact(self, artifact_id: str) -> dict[str, Any]:
+        artifact = find_artifact(self.store.read_json("artifacts.json"), artifact_id)
+        if (
+            artifact is None
+            or artifact["status"] != "approved"
+            or artifact["approved_revision"] is None
+        ):
+            raise AIWorkflowError(
+                code="unavailable_dependency",
+                message="Required upstream artifact is not approved.",
+                exit_code=6,
+                details={"artifact_id": artifact_id},
+            )
+        verify_artifact_integrity(self.store.root, artifact)
+        return artifact
 
     def submit_work(self, work_id: str) -> dict[str, Any]:
         command_key = f"submit:{work_id}"
@@ -1147,7 +1255,10 @@ def execute(request: CommandRequest) -> dict[str, Any]:
     if request.command == "status":
         return engine.inspect()
     if request.command == "prepare":
-        return engine.prepare_work(instruction=request.options.get("instruction", ""))
+        return engine.prepare_work(
+            active_item=request.options.get("task_id"),
+            instruction=request.options.get("instruction", ""),
+        )
     if request.command == "submit":
         return engine.submit_work(request.options["work_id"])
     if request.command == "review":

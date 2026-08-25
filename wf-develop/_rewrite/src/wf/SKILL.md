@@ -36,10 +36,11 @@ python3 <aiwf.py> status --workspace <workspace>
 对继续、下一步或分析需求调用：
 
 ```text
-python3 <aiwf.py> prepare --workspace <workspace> [--instruction <current-user-instruction>]
+python3 <aiwf.py> prepare --workspace <workspace> [--task-id <T-id>] [--instruction <current-user-instruction>]
 ```
 
 读取返回任务包中的 `global_memory`、`decisions`、`inputs`、`stage_guide` 和必要 `sources`。遵循任务包目标与边界，自主分析需求；只写 `draft_output` 和 `result_output`，不要直接修改正式产物或 `.aiwf` 数据。
+任务阶段默认由引擎选择下一个可处理任务；只有用户明确指定任务时才传 `--task-id`。
 
 完成后调用：
 
