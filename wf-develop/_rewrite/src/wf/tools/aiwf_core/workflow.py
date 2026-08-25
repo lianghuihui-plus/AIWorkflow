@@ -23,6 +23,7 @@ from .context import build_work, copy_successor_work, validate_work
 from .initialization import prepare_initialization
 from .model import AIWorkflowError, CommandRequest, SCHEMA_VERSION, next_id, now_iso
 from .render import render_memory
+from .repository import inspect_repository
 from .review import advance_after_approval, apply_memory_delta, approve_indexes
 from .storage import WorkspaceStore, json_bytes, sha256_bytes
 
@@ -87,6 +88,8 @@ class WorkflowEngine:
                 )
 
             stage = state["current_stage"]
+            facts: dict[str, Any] | None = None
+            repository_context: dict[str, Any] | None = None
             if goal is None:
                 active_item = self._default_active_item(stage, active_item)
                 defaults = self._default_work_context(
@@ -100,6 +103,8 @@ class WorkflowEngine:
                 sources = defaults["sources"]
                 stage_guide = defaults["stage_guide"]
                 constraints = defaults["constraints"]
+                facts = defaults.get("facts")
+                repository_context = defaults.get("repository_context")
             inputs = list(inputs or ())
             sources = list(sources or ())
             constraints = list(constraints or ())
@@ -120,6 +125,8 @@ class WorkflowEngine:
                 sources=list(sources),
                 stage_guide=stage_guide,
                 constraints=list(constraints),
+                facts=facts,
+                repository_context=repository_context,
             )
             updated_state = dict(state)
             work_bytes = json_bytes(work)
@@ -169,6 +176,10 @@ class WorkflowEngine:
                     exit_code=4,
                 )
             return None
+        if stage == "implementation":
+            return self._next_implementation_task(requested)
+        if stage == "testing":
+            return self._next_testing_task(requested)
         if stage != "specification":
             return requested
         tasks = self.store.read_json("tasks.json")["items"]
@@ -186,6 +197,50 @@ class WorkflowEngine:
             raise AIWorkflowError(
                 code="no_pending_task",
                 message="No task is ready for specification.",
+                exit_code=6,
+                details={"stage": stage},
+            )
+        return min(item["id"] for item in eligible)
+
+    def _next_implementation_task(self, requested: str | None) -> str:
+        tasks = self.store.read_json("tasks.json")["items"]
+        by_id = {item["id"]: item for item in tasks}
+        eligible = [
+            item
+            for item in tasks
+            if item["status"] in {"in_progress", "stale"}
+            and all(
+                by_id[dependency]["status"] in {"implemented", "tested"}
+                for dependency in item["depends_on"]
+            )
+        ]
+        return self._select_task(eligible, requested, stage="implementation")
+
+    def _next_testing_task(self, requested: str | None) -> str:
+        tasks = self.store.read_json("tasks.json")["items"]
+        eligible = [item for item in tasks if item["status"] in {"implemented", "stale"}]
+        return self._select_task(eligible, requested, stage="testing")
+
+    def _select_task(
+        self,
+        eligible: Sequence[dict[str, Any]],
+        requested: str | None,
+        *,
+        stage: str,
+    ) -> str:
+        if requested is not None:
+            if not any(item["id"] == requested for item in eligible):
+                raise AIWorkflowError(
+                    code="task_not_ready",
+                    message=f"Requested task is not ready for {stage}.",
+                    exit_code=6,
+                    details={"id": requested, "stage": stage},
+                )
+            return requested
+        if not eligible:
+            raise AIWorkflowError(
+                code="no_pending_task",
+                message=f"No task is ready for {stage}.",
                 exit_code=6,
                 details={"stage": stage},
             )
@@ -244,22 +299,66 @@ class WorkflowEngine:
             )
             context = {
                 "goal": f"为 {task['id']}（{task['title']}）生成可直接指导实现的任务规格。",
-                "inputs": [
-                    ".aiwf/requirements.json",
-                    ".aiwf/tasks.json",
-                    analysis["path"],
-                    design["path"],
-                ],
+                "inputs": [analysis["path"], design["path"]],
                 "sources": [analysis["path"], design["path"]],
                 "depends_on": [
                     f"analysis@{analysis['approved_revision']}",
                     f"design@{design['approved_revision']}",
                 ],
                 "stage_guide": "references/stages/specification.md",
+                "facts": self._task_facts(task),
                 "constraints": [
                     "规格范围不得超出当前 active item。",
                     "明确行为与边界，但不规定测试代码的具体实现。",
                     "只写任务包指定的草稿和结果文件。",
+                ],
+            }
+        elif stage == "implementation":
+            design = self._approved_artifact("design")
+            specification = self._approved_artifact(f"{active_item}-spec")
+            task = self._task(active_item)
+            dependency_artifacts = [
+                self._approved_artifact(f"{dependency}-implementation")
+                for dependency in task["depends_on"]
+            ]
+            context = {
+                "goal": f"按照已批准规格实现 {task['id']}（{task['title']}），并记录实际验证结果。",
+                "inputs": [specification["path"], design["path"]],
+                "sources": [specification["path"], design["path"]],
+                "depends_on": [
+                    f"{specification['id']}@{specification['approved_revision']}",
+                    *[
+                        f"{artifact['id']}@{artifact['approved_revision']}"
+                        for artifact in dependency_artifacts
+                    ],
+                ],
+                "stage_guide": "references/stages/implementation.md",
+                "facts": self._task_facts(task),
+                "repository_context": inspect_repository(project["code_repository"]),
+                "constraints": [
+                    "保护任务开始前已经存在的代码仓库改动。",
+                    "只处理当前 active item，不提交或清理版本控制状态。",
+                    "只写任务包指定的报告草稿、结果文件和任务范围内代码。",
+                ],
+            }
+        elif stage == "testing":
+            specification = self._approved_artifact(f"{active_item}-spec")
+            implementation = self._approved_artifact(f"{active_item}-implementation")
+            task = self._task(active_item)
+            context = {
+                "goal": f"基于真实实现为 {task['id']}（{task['title']}）补充并执行必要测试。",
+                "inputs": [specification["path"], implementation["path"]],
+                "sources": [implementation["path"], specification["path"]],
+                "depends_on": [
+                    f"{implementation['id']}@{implementation['approved_revision']}"
+                ],
+                "stage_guide": "references/stages/testing.md",
+                "facts": self._task_facts(task),
+                "repository_context": inspect_repository(project["code_repository"]),
+                "constraints": [
+                    "测试设计基于真实实现和仓库现有测试模式。",
+                    "保护任务开始前已经存在的代码仓库改动。",
+                    "只写任务包指定的报告草稿、结果文件和任务范围内代码。",
                 ],
             }
         else:
@@ -267,12 +366,39 @@ class WorkflowEngine:
                 code="stage_not_implemented",
                 message=f"Automatic task context for stage '{stage}' is not connected yet.",
                 exit_code=3,
-                details={"stage": stage, "phase": 5},
+                details={"stage": stage, "phase": 6},
             )
         goal = context["goal"]
         if instruction.strip():
             goal = f"{goal} 当前用户补充要求：{instruction.strip()}"
         return {**context, "goal": goal}
+
+    def _task(self, task_id: str | None) -> dict[str, Any]:
+        task = next(
+            (
+                item
+                for item in self.store.read_json("tasks.json")["items"]
+                if item["id"] == task_id
+            ),
+            None,
+        )
+        if task is None:
+            raise AIWorkflowError(
+                code="unknown_task_id",
+                message="Task does not exist.",
+                exit_code=4,
+                details={"id": task_id},
+            )
+        return task
+
+    def _task_facts(self, task: dict[str, Any]) -> dict[str, Any]:
+        requirement_by_id = {
+            item["id"]: item for item in self.store.read_json("requirements.json")["items"]
+        }
+        return {
+            "task": task,
+            "requirements": [requirement_by_id[item_id] for item_id in task["requirements"]],
+        }
 
     def _approved_artifact(self, artifact_id: str) -> dict[str, Any]:
         artifact = find_artifact(self.store.read_json("artifacts.json"), artifact_id)

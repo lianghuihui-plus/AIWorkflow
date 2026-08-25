@@ -28,6 +28,8 @@ def build_work(
     sources: list[str],
     stage_guide: str,
     constraints: list[str],
+    facts: dict[str, Any] | None = None,
+    repository_context: dict[str, Any] | None = None,
     predecessor: str | None = None,
     feedback: str | None = None,
 ) -> dict[str, Any]:
@@ -58,6 +60,10 @@ def build_work(
         "feedback": feedback,
         "created_at": now_iso(),
     }
+    if facts is not None:
+        work["facts"] = facts
+    if repository_context is not None:
+        work["repository_context"] = repository_context
     validate_work(work)
     return work
 
@@ -92,6 +98,22 @@ def validate_work(value: Any) -> dict[str, Any]:
         require_string(work.get(field_name), document, field_name, empty=field_name == "stage_guide")
     require_mapping(work.get("result_schema"), document)
     require_string_list(work.get("constraints"), document, "constraints")
+    if "facts" in work:
+        require_mapping(work.get("facts"), document)
+    if "repository_context" in work:
+        repository = require_mapping(work.get("repository_context"), document)
+        if repository.get("type") not in {"git", "directory"}:
+            fail_schema(document, "repository_context.type must be git or directory")
+        require_string(repository.get("path"), document, "repository_context.path")
+        require_string(repository.get("root"), document, "repository_context.root")
+        head = repository.get("head")
+        if head is not None and not isinstance(head, str):
+            fail_schema(document, "repository_context.head must be a string or null")
+        require_string_list(
+            repository.get("status_lines"),
+            document,
+            "repository_context.status_lines",
+        )
     require_optional_string(work.get("predecessor"), document, "predecessor")
     require_optional_string(work.get("feedback"), document, "feedback")
     return work
@@ -113,6 +135,12 @@ def copy_successor_work(
         sources=list(previous["sources"]),
         stage_guide=previous["stage_guide"],
         constraints=list(previous["constraints"]),
+        facts=dict(previous["facts"]) if "facts" in previous else None,
+        repository_context=(
+            dict(previous["repository_context"])
+            if "repository_context" in previous
+            else None
+        ),
         predecessor=previous["work_id"],
         feedback=feedback if feedback is not None else previous.get("feedback"),
     )

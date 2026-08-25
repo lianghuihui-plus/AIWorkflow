@@ -8,7 +8,7 @@ from pathlib import Path
 from support import SOURCE_ROOT, run_cli
 
 
-def initialize_workspace(root: Path) -> Path:
+def initialize_workspace(root: Path, *, repository: Path | None = None) -> Path:
     workspace = root / "workspace"
     workspace.mkdir()
     prd = root / "requirements.md"
@@ -16,19 +16,20 @@ def initialize_workspace(root: Path) -> Path:
         "# Drafts\n\nSigned-in users can save a draft and continue later.\n",
         encoding="utf-8",
     )
-    completed = run_cli(
-        [
-            "init",
-            "--workspace",
-            str(workspace),
-            "--name",
-            "Draft Editor",
-            "--platform",
-            "web",
-            "--prd",
-            str(prd),
-        ]
-    )
+    arguments = [
+        "init",
+        "--workspace",
+        str(workspace),
+        "--name",
+        "Draft Editor",
+        "--platform",
+        "web",
+        "--prd",
+        str(prd),
+    ]
+    if repository is not None:
+        arguments.extend(("--code-repository", str(repository)))
+    completed = run_cli(arguments)
     if completed.returncode != 0:
         raise AssertionError(completed.stderr)
     return workspace
