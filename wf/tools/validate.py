@@ -179,6 +179,22 @@ DESIGN_INTERFACE_CHANGE_HINTS = [
     "签名",
     "职责变化",
 ]
+SPEC_TEST_PATH_PATTERNS = [
+    re.compile(r"(?:^|[/\\])(?:test|tests|__tests__|ohosTest)(?:[/\\]|$)", re.IGNORECASE),
+    re.compile(r"(?:^|[/\\])[^/\\\s`]+\.(?:test|spec)\.[^/\\\s`]+", re.IGNORECASE),
+    re.compile(r"(?:^|[/\\])[^/\\\s`]+_test\.[^/\\\s`]+", re.IGNORECASE),
+]
+SPEC_TEST_IMPLEMENTATION_RE = re.compile(
+    r"(?:新增|补充|编写|生成|创建|添加|修改|更新|完善|实现).{0,20}"
+    r"(?:单元测试|测试用例|测试代码|测试文件|测试类|测试方法|测试断言|mock(?:对象|实现)?|stub)"
+    r"|(?:单元测试|测试用例|测试代码|测试文件|测试类|测试方法|测试断言|mock(?:对象|实现)?|stub).{0,20}"
+    r"(?:新增|补充|编写|生成|创建|添加|修改|更新|完善|实现)",
+    re.IGNORECASE,
+)
+SPEC_TESTABILITY_SOURCE_CHANGE_RE = re.compile(
+    r"可测试性|依赖注入|可替换依赖|时钟抽象|接口抽象",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -376,6 +392,34 @@ def test_report_blocking_statuses(text: str) -> list[str]:
         if status in TEST_REPORT_BLOCKING_STATUSES:
             statuses.append(status)
     return statuses
+
+
+def spec_change_blocks(text: str) -> list[tuple[str, str, str]]:
+    body = section(text, "修改点")
+    matches = list(re.finditer(r"(?m)^### 修改点 (\d+)：(.+?)\s*$", body))
+    blocks: list[tuple[str, str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        blocks.append((match.group(1), match.group(2).strip(), body[match.start() : end]))
+    return blocks
+
+
+def markdown_bold_list_field(block: str, label: str) -> str:
+    match = re.search(rf"(?m)^-\s+\*\*{re.escape(label)}：\*\*\s*(.+?)\s*$", block)
+    return match.group(1).strip() if match else ""
+
+
+def references_test_file(value: str) -> bool:
+    return any(pattern.search(value) for pattern in SPEC_TEST_PATH_PATTERNS)
+
+
+def contains_test_implementation_instruction(block: str) -> bool:
+    for line in block.splitlines():
+        if SPEC_TESTABILITY_SOURCE_CHANGE_RE.search(line):
+            continue
+        if SPEC_TEST_IMPLEMENTATION_RE.search(line):
+            return True
+    return False
 
 
 def review_status(path: Path) -> str | None:
@@ -917,11 +961,41 @@ def validate_design_interface_definitions(text: str, file: str, issues: list[Iss
                 return
 
 
-def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
+def validate_spec_test_boundary(root: Path, spec: Path, text: str, issues: list[Issue], action: str | None) -> None:
+    strict = action == "implement-code" or (
+        action == "review-artifact" and review_status(spec) in {"待审核", "需修改"}
+    )
+    level = "fail" if strict else "warn"
+    file = rel(spec, root)
+    for number, title, block in spec_change_blocks(text):
+        file_reference = markdown_bold_list_field(block, "文件")
+        if references_test_file(file_reference):
+            add(
+                issues,
+                level,
+                "spec_change_targets_test_file",
+                file,
+                f"修改点 {number}（{title}）指向测试代码文件：{file_reference}",
+                "从规格删除测试代码修改点，只保留可验证的关键行为；由 generate-tests 阶段生成测试代码",
+            )
+            continue
+        if contains_test_implementation_instruction(block):
+            add(
+                issues,
+                level,
+                "spec_change_contains_test_implementation",
+                file,
+                f"修改点 {number}（{title}）包含测试代码实现指令",
+                "从规格删除测试类、测试方法、测试用例、Mock 或测试断言指令；由 generate-tests 阶段负责",
+            )
+
+
+def validate_stage_artifact_structure(root: Path, issues: list[Issue], action: str | None = None) -> None:
     validate_analysis_structure(root, issues)
     validate_design_structure(root, issues)
     for spec in sorted((root / "output" / "specs").glob("T-*.md")):
-        ids = SPEC_CHANGE_HEADING_RE.findall(read_text(spec))
+        text = read_text(spec)
+        ids = SPEC_CHANGE_HEADING_RE.findall(text)
         validate_ordered_numbers(
             issues,
             ids,
@@ -931,6 +1005,7 @@ def validate_stage_artifact_structure(root: Path, issues: list[Issue]) -> None:
             "新增修改点追加到末尾并使用下一个序号",
             level="warn",
         )
+        validate_spec_test_boundary(root, spec, text, issues, action)
     for report in sorted((root / "output" / "reports").glob("T-*.md")):
         text = read_text(report)
         ids = DEVIATION_HEADING_RE.findall(text)
@@ -1231,7 +1306,7 @@ def validate(root: Path, action: str | None = None, target: str | None = None) -
     validate_changelog_structure(root, issues)
     if action != "resolve-decision":
         validate_open_issues(root, issues, action, stage)
-    validate_stage_artifact_structure(root, issues)
+    validate_stage_artifact_structure(root, issues, action)
     validate_downstream_freshness(root, issues)
 
     tasks = parse_design_tasks(root)

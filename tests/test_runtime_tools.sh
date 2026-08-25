@@ -139,6 +139,26 @@ if expected not in types:
 PY
 }
 
+assert_issue_level() {
+  local json="$1"
+  local expected_type="$2"
+  local expected_level="$3"
+  python3 - "$json" "$expected_type" "$expected_level" <<'PY'
+import json
+import sys
+payload = json.loads(sys.argv[1])
+expected_type = sys.argv[2]
+expected_level = sys.argv[3]
+levels = [
+    issue.get("level")
+    for issue in payload.get("issues", [])
+    if issue.get("type") == expected_type
+]
+if expected_level not in levels:
+    raise SystemExit(f"expected {expected_type} level {expected_level}, got {levels}")
+PY
+}
+
 assert_file_review_status() {
   local file="$1"
   local expected="$2"
@@ -1058,11 +1078,158 @@ test_readme_describes_current_framework_loop() {
 
 test_generate_specs_reads_technical_design_fields() {
   local capability="$ROOT_DIR/wf/capabilities/generate-specs.md"
+  local contract="$ROOT_DIR/wf/contracts/spec.md"
+  local implementation="$ROOT_DIR/wf/capabilities/implement-code.md"
 
   grep -q "技术目标" "$capability" || fail "generate-specs should read design technical target"
   grep -q "设计约束" "$capability" || fail "generate-specs should read design constraints"
   grep -q "影响范围" "$capability" || fail "generate-specs should read design impact scope"
   grep -q "不得只依据任务标题" "$capability" || fail "generate-specs should not rely only on task title"
+  grep -q "不得转换为测试文件" "$capability" || fail "generate-specs should not turn regression scope into test changes"
+  grep -q "不得指向单元测试" "$contract" || fail "spec contract should reject test code change points"
+  grep -q "规格阶段越界" "$implementation" || fail "implement-code should stop on test changes in specs"
+}
+
+test_validator_allows_testable_behavior_without_test_code_change() {
+  local ws="$TMP_DIR/spec-production-testability"
+  write_base_workspace "$ws"
+  cat > "$ws/output/specs/T-001.md" <<'EOF'
+# T-001 — 可替换时钟
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务概述
+
+抽象时间来源。
+
+## 依赖
+
+无
+
+## 关键行为
+
+- 超时边界到达时只触发一次状态变化。
+
+## 实现方案
+
+通过依赖注入提供时间来源。
+
+## 修改点
+
+### 修改点 1：抽象时间来源
+
+- **文件：** `src/ClockProvider.ts` [NEW]
+- **类型：** 新增
+- **内容：** 引入 Clock 依赖注入并说明生产环境默认实现，提升可测试性。
+- **约束：** 不改变现有超时语义。
+EOF
+
+  local out
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "pass"
+}
+
+test_validator_flags_spec_test_code_change_points() {
+  local ws="$TMP_DIR/spec-test-code-boundary"
+  write_base_workspace "$ws"
+  cat > "$ws/output/specs/T-001.md" <<'EOF'
+# T-001 — 错误测试文件修改点
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务概述
+
+demo
+
+## 依赖
+
+无
+
+## 关键行为
+
+- 失败时恢复原状态。
+
+## 实现方案
+
+demo
+
+## 修改点
+
+### 修改点 1：补充失败场景测试
+
+- **文件：** `src/ohosTest/Failure.test.ets` [NEW]
+- **类型：** 新增
+- **内容：** 覆盖失败场景。
+- **约束：** 使用现有测试框架。
+EOF
+  cat > "$ws/output/specs/T-002.md" <<'EOF'
+# T-002 — 错误测试实现指令
+
+## 审核状态
+
+- 状态：已确认
+- 审核人：User
+- 审核时间：2026-06-10 10:00
+- 修订来源：
+
+## 任务概述
+
+demo
+
+## 依赖
+
+无
+
+## 关键行为
+
+- 空数据时返回空结果。
+
+## 实现方案
+
+demo
+
+## 修改点
+
+### 修改点 1：补充覆盖
+
+- **文件：** `src/Foo.ts`
+- **类型：** 修改
+- **内容：** 新增 FooViewModel 的单元测试并补充 Mock 对象。
+- **约束：** 覆盖异常分支。
+EOF
+
+  local out
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --json || true)"
+  assert_json_status "$out" "warn"
+  assert_issue_level "$out" "spec_change_targets_test_file" "warn"
+  assert_issue_level "$out" "spec_change_contains_test_implementation" "warn"
+
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --action implement-code --json || true)"
+  assert_json_status "$out" "fail"
+  assert_issue_level "$out" "spec_change_targets_test_file" "fail"
+  assert_issue_level "$out" "spec_change_contains_test_implementation" "fail"
+
+  python3 - "$ws/output/specs/T-001.md" "$ws/output/specs/T-002.md" <<'PY'
+from pathlib import Path
+import sys
+for value in sys.argv[1:]:
+    path = Path(value)
+    path.write_text(path.read_text().replace("- 状态：已确认", "- 状态：待审核"))
+PY
+  out="$(python3 "$ROOT_DIR/tools/validator_source/validate.py" "$ws" --action review-artifact --json || true)"
+  assert_json_status "$out" "fail"
+  assert_issue_level "$out" "spec_change_targets_test_file" "fail"
+  assert_issue_level "$out" "spec_change_contains_test_implementation" "fail"
 }
 
 test_validator_allows_decision_resolution_with_pending_revision_artifact() {
@@ -2241,6 +2408,8 @@ test_design_diagram_labels_require_chinese_explanations
 test_test_report_avoids_wide_long_text_tables
 test_readme_describes_current_framework_loop
 test_generate_specs_reads_technical_design_fields
+test_validator_allows_testable_behavior_without_test_code_change
+test_validator_flags_spec_test_code_change_points
 test_validator_allows_decision_resolution_with_pending_revision_artifact
 test_validator_resolve_decision_requires_target_issue_decision
 test_sync_validator_copies_source
