@@ -80,7 +80,12 @@ class WorkspaceStore:
     def initialized(self) -> bool:
         return self.data_root.is_dir()
 
-    def bootstrap(self, project: Mapping[str, Any]) -> None:
+    def bootstrap(
+        self,
+        project: Mapping[str, Any],
+        *,
+        prd_files: Mapping[str, bytes] | None = None,
+    ) -> None:
         if not self.root.is_dir():
             raise AIWorkflowError(
                 code="invalid_workspace",
@@ -88,12 +93,16 @@ class WorkspaceStore:
                 exit_code=2,
                 details={"path": str(self.root)},
             )
-        if self.data_root.exists():
+        existing_entries = list(self.root.iterdir())
+        if existing_entries:
             raise AIWorkflowError(
-                code="workspace_exists",
-                message="Workspace data already exists.",
+                code="workspace_not_empty",
+                message="Workspace directory must be empty before initialization.",
                 exit_code=5,
-                details={"path": str(self.data_root)},
+                details={
+                    "path": str(self.root),
+                    "entries": sorted(path.name for path in existing_entries),
+                },
             )
 
         timestamp = now_iso()
@@ -125,8 +134,25 @@ class WorkspaceStore:
         for name, document in initial_documents.items():
             validate_document(name, document)
 
-        temporary_root = Path(tempfile.mkdtemp(prefix=".aiwf-bootstrap-", dir=self.root))
+        copied_prd = dict(prd_files or {})
+        for filename in copied_prd:
+            if Path(filename).name != filename or filename in {"", ".", ".."}:
+                raise AIWorkflowError(
+                    code="prd_name_invalid",
+                    message="PRD destination must be a plain filename.",
+                    exit_code=2,
+                    details={"filename": filename},
+                )
+
+        staging_root = Path(tempfile.mkdtemp(prefix=".aiwf-bootstrap-", dir=self.root))
+        temporary_root = staging_root / ".aiwf"
+        temporary_prd = staging_root / "prd"
+        temporary_artifacts = staging_root / "artifacts"
+        installed_paths: list[Path] = []
         try:
+            temporary_root.mkdir()
+            temporary_prd.mkdir()
+            temporary_artifacts.mkdir()
             for directory in ("results", "history", "work", "transactions"):
                 (temporary_root / directory).mkdir(parents=True)
             for name, document in initial_documents.items():
@@ -144,18 +170,25 @@ class WorkspaceStore:
             (temporary_root / "events.jsonl").write_bytes(json_line(event))
             (temporary_root / "memory.md").write_text("# Project Memory\n", encoding="utf-8")
             (temporary_root / "workspace.lock").touch()
-            os.replace(temporary_root, self.data_root)
-        except Exception:
-            shutil.rmtree(temporary_root, ignore_errors=True)
-            raise
+            for filename, content in copied_prd.items():
+                (temporary_prd / filename).write_bytes(content)
+            for directory in ("specs", "reports", "tests"):
+                (temporary_artifacts / directory).mkdir()
 
-        for directory in (
-            "prd",
-            "artifacts/specs",
-            "artifacts/reports",
-            "artifacts/tests",
-        ):
-            (self.root / directory).mkdir(parents=True, exist_ok=True)
+            for source, target in (
+                (temporary_prd, self.root / "prd"),
+                (temporary_artifacts, self.root / "artifacts"),
+                (temporary_root, self.data_root),
+            ):
+                os.replace(source, target)
+                installed_paths.append(target)
+                self._fsync_directory(self.root)
+        except Exception:
+            for installed_path in reversed(installed_paths):
+                shutil.rmtree(installed_path, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
     def require_initialized(self) -> None:
         if not self.initialized:

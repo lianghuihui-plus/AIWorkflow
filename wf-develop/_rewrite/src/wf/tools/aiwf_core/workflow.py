@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Any, Mapping, Sequence
 
 from .artifacts import (
     artifact_identity,
@@ -20,6 +20,7 @@ from .artifacts import (
     verify_artifact_integrity,
 )
 from .context import build_work, copy_successor_work, validate_work
+from .initialization import prepare_initialization
 from .model import AIWorkflowError, CommandRequest, SCHEMA_VERSION, next_id, now_iso
 from .render import render_memory
 from .review import advance_after_approval, apply_memory_delta, approve_indexes
@@ -32,6 +33,26 @@ class WorkflowEngine:
 
     def bootstrap(self, project: Mapping[str, Any]) -> None:
         self.store.bootstrap(project)
+
+    def initialize(
+        self,
+        *,
+        name: str,
+        platform: str,
+        prd_paths: Sequence[str],
+        code_repository: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        prepared = prepare_initialization(
+            workspace=self.store.root,
+            name=name,
+            platform=platform,
+            prd_paths=prd_paths,
+            code_repository=code_repository,
+            project_id=project_id,
+        )
+        self.store.bootstrap(prepared.project, prd_files=prepared.prd_files)
+        return self.inspect()
 
     def recover(self) -> list[str]:
         with self.store.lock(exclusive=True):
@@ -648,26 +669,163 @@ class WorkflowEngine:
                 "questions.json",
                 "memory.json",
             )}
-            drift: list[dict[str, Any]] = []
+            issues: list[dict[str, Any]] = []
             for artifact in documents["artifacts.json"]["items"]:
                 try:
                     verify_artifact_integrity(self.store.root, artifact)
                 except AIWorkflowError as error:
-                    drift.append(error.as_dict())
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": error.code,
+                            "message": error.message,
+                            "details": error.details,
+                        }
+                    )
+            project = documents["project.json"]
+            state = documents["state.json"]
+            for prd_path in project["prd_files"]:
+                try:
+                    path = self.store.safe_path(prd_path)
+                except AIWorkflowError as error:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": error.code,
+                            "message": error.message,
+                            "details": error.details,
+                        }
+                    )
+                    continue
+                if not path.is_file():
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "prd_missing",
+                            "message": "Configured PRD copy is missing.",
+                            "details": {"path": prd_path},
+                        }
+                    )
+            repository = project["code_repository"]
+            if repository is not None and not Path(repository).is_dir():
+                issues.append(
+                    {
+                        "level": "warning",
+                        "type": "code_repository_unavailable",
+                        "message": "Configured code repository is not accessible.",
+                        "details": {"path": repository},
+                    }
+                )
+            artifacts_by_ref = {
+                f"{item['id']}@{item['revision']}": item
+                for item in documents["artifacts.json"]["items"]
+            }
+            for reference in state["pending_reviews"]:
+                artifact = artifacts_by_ref.get(reference)
+                if artifact is None or artifact["status"] != "review":
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "pending_review_mismatch",
+                            "message": "Pending review does not match the artifact registry.",
+                            "details": {"reference": reference},
+                        }
+                    )
+            open_questions = {
+                item["id"]: item
+                for item in documents["questions.json"]["items"]
+                if item["status"] == "open"
+            }
+            for question_id in state["blocking_questions"]:
+                if question_id not in open_questions:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "blocking_question_mismatch",
+                            "message": "Blocking question is not open in the question registry.",
+                            "details": {"question_id": question_id},
+                        }
+                    )
+            if state["active_work"] is not None:
+                try:
+                    self._read_work(
+                        state["active_work"],
+                        expected_hash=state["active_work_sha256"],
+                    )
+                except AIWorkflowError as error:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": error.code,
+                            "message": error.message,
+                            "details": error.details,
+                        }
+                    )
+            requirement_ids = {item["id"] for item in documents["requirements.json"]["items"]}
+            task_ids = {item["id"] for item in documents["tasks.json"]["items"]}
+            for task in documents["tasks.json"]["items"]:
+                unknown_requirements = sorted(set(task["requirements"]) - requirement_ids)
+                unknown_dependencies = sorted(set(task["depends_on"]) - task_ids)
+                if unknown_requirements or unknown_dependencies:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "task_reference_mismatch",
+                            "message": "Task index contains unresolved references.",
+                            "details": {
+                                "task_id": task["id"],
+                                "requirements": unknown_requirements,
+                                "dependencies": unknown_dependencies,
+                            },
+                        }
+                    )
+            pending_review_items = [
+                artifacts_by_ref[reference]
+                for reference in state["pending_reviews"]
+                if reference in artifacts_by_ref
+            ]
+            blocking_question_items = [
+                open_questions[question_id]
+                for question_id in state["blocking_questions"]
+                if question_id in open_questions
+            ]
             return {
-                "status": "ok" if not drift else "artifact_drift",
+                "status": "ok" if not issues else "issues_found",
                 "workspace": str(self.store.root),
-                "state": documents["state.json"],
+                "project": project,
+                "state": state,
+                "next_action": self._next_action(state),
                 "counts": {
+                    "prd_files": len(project["prd_files"]),
                     "requirements": len(documents["requirements.json"]["items"]),
                     "tasks": len(documents["tasks.json"]["items"]),
                     "artifacts": len(documents["artifacts.json"]["items"]),
-                    "open_questions": sum(
-                        item["status"] == "open" for item in documents["questions.json"]["items"]
+                    "open_questions": len(open_questions),
+                    "decisions": len(documents["decisions.json"]["items"]),
+                    "memory_entries": sum(
+                        item["status"] == "active" for item in documents["memory.json"]["items"]
                     ),
                 },
-                "issues": drift,
+                "pending_reviews": pending_review_items,
+                "blocking_questions": blocking_question_items,
+                "issues": issues,
             }
+
+    def _next_action(self, state: dict[str, Any]) -> str:
+        if state["mode"] == "review":
+            return "review"
+        if state["mode"] == "blocked":
+            return "decide"
+        if state["mode"] == "working":
+            return "resume"
+        return {
+            "analysis": "analyze_requirements",
+            "design": "design_solution",
+            "specification": "generate_specification",
+            "implementation": "implement_code",
+            "testing": "generate_tests",
+            "completed": "completed",
+        }[state["current_stage"]]
 
     def _request_changes(
         self,
@@ -936,16 +1094,25 @@ class WorkflowEngine:
         )
 
 
-def execute(request: CommandRequest) -> NoReturn:
-    """Keep the CLI disconnected until phase 3 defines command arguments."""
-
+def execute(request: CommandRequest) -> dict[str, Any]:
+    engine = WorkflowEngine(request.workspace)
+    if request.command == "init":
+        return engine.initialize(
+            name=request.options.get("name", request.workspace.name),
+            platform=request.options["platform"],
+            prd_paths=request.options["prd"],
+            code_repository=request.options.get("code_repository"),
+            project_id=request.options.get("project_id"),
+        )
+    if request.command == "status":
+        return engine.inspect()
     raise AIWorkflowError(
         code="command_not_implemented",
-        message=f"Command '{request.command}' is not connected before phase 3.",
+        message=f"Command '{request.command}' is not connected before its implementation phase.",
         exit_code=3,
         details={
             "command": request.command,
-            "phase": 2,
+            "phase": 3,
             "workspace": str(request.workspace),
         },
     )

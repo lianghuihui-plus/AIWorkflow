@@ -47,6 +47,23 @@ def build_parser() -> argparse.ArgumentParser:
             default=".",
             help="Workspace directory (default: current directory).",
         )
+        if spec.name == "init":
+            command_parser.add_argument(
+                "--name",
+                help="Project name (default: workspace directory name).",
+            )
+            command_parser.add_argument("--platform", required=True, help="Target platform.")
+            command_parser.add_argument(
+                "--prd",
+                action="append",
+                required=True,
+                help="PRD file or directory; repeat for multiple inputs.",
+            )
+            command_parser.add_argument(
+                "--code-repository",
+                help="Optional existing code repository directory.",
+            )
+            command_parser.add_argument("--project-id", help="Optional stable project id.")
 
     return parser
 
@@ -83,7 +100,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         workspace = resolve_workspace(args.workspace)
-        result = execute(CommandRequest(command=args.command, workspace=workspace))
+        options = {
+            key: value
+            for key, value in vars(args).items()
+            if key not in {"command", "workspace"} and value is not None
+        }
+        result = execute(
+            CommandRequest(command=args.command, workspace=workspace, options=options)
+        )
     except AIWorkflowError as error:
         write_error(error, sys.stderr)
         return error.exit_code

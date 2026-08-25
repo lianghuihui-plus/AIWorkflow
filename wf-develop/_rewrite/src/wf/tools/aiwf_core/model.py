@@ -73,6 +73,7 @@ COMMAND_SPECS = (
 class CommandRequest:
     command: str
     workspace: Path
+    options: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

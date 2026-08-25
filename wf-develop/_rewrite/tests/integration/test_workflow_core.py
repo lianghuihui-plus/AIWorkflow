@@ -157,7 +157,9 @@ class WorkflowCoreTests(unittest.TestCase):
                 engine.review_artifact("analysis", 1, outcome="approved")
 
             self.assertEqual(raised.exception.code, "artifact_drift")
-            self.assertEqual(engine.inspect()["status"], "artifact_drift")
+            inspection = engine.inspect()
+            self.assertEqual(inspection["status"], "issues_found")
+            self.assertIn("artifact_drift", {issue["type"] for issue in inspection["issues"]})
             self.assertEqual(engine.store.read_json("state.json")["mode"], "review")
 
     def test_change_request_creates_a_seeded_successor_revision(self) -> None:
