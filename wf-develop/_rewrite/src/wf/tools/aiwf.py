@@ -64,6 +64,33 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Optional existing code repository directory.",
             )
             command_parser.add_argument("--project-id", help="Optional stable project id.")
+        elif spec.name == "prepare":
+            command_parser.add_argument(
+                "--instruction",
+                help="Optional user instruction to append to the current stage goal.",
+            )
+        elif spec.name == "submit":
+            command_parser.add_argument("--work-id", required=True, help="Active work id.")
+        elif spec.name == "review":
+            command_parser.add_argument("--artifact-id", required=True, help="Artifact id.")
+            command_parser.add_argument("--revision", required=True, type=int, help="Revision number.")
+            command_parser.add_argument(
+                "--outcome",
+                required=True,
+                choices=("approved", "changes_requested"),
+                help="Review outcome.",
+            )
+            command_parser.add_argument("--feedback", help="Required change feedback.")
+        elif spec.name == "question":
+            command_parser.add_argument("--work-id", required=True, help="Active work id.")
+            command_parser.add_argument(
+                "--items-json",
+                required=True,
+                help="JSON array of all blocking questions for this work.",
+            )
+        elif spec.name == "decide":
+            command_parser.add_argument("--question-id", required=True, help="Open question id.")
+            command_parser.add_argument("--decision", required=True, help="User decision text.")
 
     return parser
 

@@ -31,11 +31,11 @@ class CommandLineTests(unittest.TestCase):
             completed = run_cli(["--version"], cwd=Path(directory))
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "aiwf 0.3.0.dev1")
+        self.assertEqual(completed.stdout.strip(), "aiwf 0.4.0.dev1")
 
     def test_unimplemented_command_returns_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
-            completed = run_cli(["prepare", "--workspace", workspace])
+            completed = run_cli(["render", "--workspace", workspace])
 
         self.assertEqual(completed.returncode, 3)
         self.assertEqual(completed.stdout, "")
@@ -43,7 +43,7 @@ class CommandLineTests(unittest.TestCase):
         payload = json.loads(completed.stderr)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "command_not_implemented")
-        self.assertEqual(payload["error"]["details"]["command"], "prepare")
+        self.assertEqual(payload["error"]["details"]["command"], "render")
         self.assertEqual(payload["error"]["details"]["workspace"], str(Path(workspace).resolve()))
 
     def test_missing_workspace_returns_structured_error(self) -> None:

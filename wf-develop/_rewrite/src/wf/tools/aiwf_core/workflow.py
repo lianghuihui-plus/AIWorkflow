@@ -61,13 +61,14 @@ class WorkflowEngine:
     def prepare_work(
         self,
         *,
-        goal: str,
+        goal: str | None = None,
         active_item: str | None = None,
-        inputs: Sequence[str] = (),
+        inputs: Sequence[str] | None = None,
         depends_on: Sequence[str] = (),
-        sources: Sequence[str] = (),
-        stage_guide: str = "",
-        constraints: Sequence[str] = (),
+        sources: Sequence[str] | None = None,
+        stage_guide: str | None = None,
+        constraints: Sequence[str] | None = None,
+        instruction: str = "",
     ) -> dict[str, Any]:
         with self.store.lock(exclusive=True):
             self.store.recover_locked()
@@ -86,6 +87,17 @@ class WorkflowEngine:
                 )
 
             stage = state["current_stage"]
+            if goal is None:
+                defaults = self._default_work_context(stage, instruction=instruction)
+                goal = defaults["goal"]
+                inputs = defaults["inputs"]
+                sources = defaults["sources"]
+                stage_guide = defaults["stage_guide"]
+                constraints = defaults["constraints"]
+            inputs = list(inputs or ())
+            sources = list(sources or ())
+            constraints = list(constraints or ())
+            stage_guide = stage_guide or ""
             self._validate_active_item(stage, active_item)
             self._validate_dependencies(depends_on)
             for path in [*inputs, *sources]:
@@ -141,6 +153,34 @@ class WorkflowEngine:
                 request_digest=request_digest,
             )
             return work
+
+    def _default_work_context(self, stage: str, *, instruction: str) -> dict[str, Any]:
+        if stage != "analysis":
+            raise AIWorkflowError(
+                code="stage_not_implemented",
+                message=f"Automatic task context for stage '{stage}' is not connected yet.",
+                exit_code=3,
+                details={"stage": stage, "phase": 4},
+            )
+        project = self.store.read_json("project.json")
+        goal = "理解全部 PRD，形成可审核并能支撑技术设计的整体需求分析。"
+        if instruction.strip():
+            goal = f"{goal} 当前用户补充要求：{instruction.strip()}"
+        return {
+            "goal": goal,
+            "inputs": [
+                ".aiwf/project.json",
+                *project["prd_files"],
+                ".aiwf/requirements.json",
+            ],
+            "sources": list(project["prd_files"]),
+            "stage_guide": "references/stages/analysis.md",
+            "constraints": [
+                "区分已知事实、合理推断和待用户决策事项。",
+                "只有缺少答案会阻止安全推进时才创建阻塞问题。",
+                "只写任务包指定的草稿和结果文件。",
+            ],
+        }
 
     def submit_work(self, work_id: str) -> dict[str, Any]:
         command_key = f"submit:{work_id}"
@@ -1106,13 +1146,42 @@ def execute(request: CommandRequest) -> dict[str, Any]:
         )
     if request.command == "status":
         return engine.inspect()
+    if request.command == "prepare":
+        return engine.prepare_work(instruction=request.options.get("instruction", ""))
+    if request.command == "submit":
+        return engine.submit_work(request.options["work_id"])
+    if request.command == "review":
+        return engine.review_artifact(
+            request.options["artifact_id"],
+            request.options["revision"],
+            outcome=request.options["outcome"],
+            feedback=request.options.get("feedback", ""),
+        )
+    if request.command == "question":
+        try:
+            questions = json.loads(request.options["items_json"])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise AIWorkflowError(
+                code="invalid_questions",
+                message="Blocking questions must be a valid JSON array.",
+                exit_code=2,
+            ) from error
+        if not isinstance(questions, list):
+            raise AIWorkflowError(
+                code="invalid_questions",
+                message="Blocking questions must be a valid JSON array.",
+                exit_code=2,
+            )
+        return engine.open_questions(request.options["work_id"], questions)
+    if request.command == "decide":
+        return engine.decide(request.options["question_id"], request.options["decision"])
     raise AIWorkflowError(
         code="command_not_implemented",
         message=f"Command '{request.command}' is not connected before its implementation phase.",
         exit_code=3,
         details={
             "command": request.command,
-            "phase": 3,
+            "phase": 4,
             "workspace": str(request.workspace),
         },
     )

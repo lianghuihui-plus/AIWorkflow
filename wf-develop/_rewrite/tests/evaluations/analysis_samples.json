@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "id": "kn-ai-base-flow",
+      "source": "../AIDev2/AIDev/inputs/kn-ai/PRD_【KN-AI辅导】【基础流程+三层策略+幽灵积木】.md",
+      "sha256": "c2ccb24cc8d64b568e8d6df0a5101c620d5394a535f4614af90a8147897a395b",
+      "selection_reason": "包含多类用户、分层策略、成本限制、功能冲突和跨模块依赖。"
+    },
+    {
+      "id": "kn-ai-legacy-compatibility",
+      "source": "../AIDev2/AIDev/inputs/kn-ai/PRD_【KN-AI辅导】旧框架兼容_9.1.md",
+      "sha256": "56ca763fb0aa91cf83c528eed25bda4ac9783ed23fa8a8138939db9f21626ed6",
+      "selection_reason": "包含灰度策略、旧框架兼容、多个既有功能冲突和明确非范围。"
+    }
+  ],
+  "rubric": [
+    "业务目标理解准确",
+    "关键行为覆盖完整",
+    "识别隐含约束",
+    "发现冲突与缺失",
+    "区分事实、推断和待决策项",
+    "只提出真正阻塞的问题",
+    "足以支撑技术设计",
+    "主要篇幅用于需求语义"
+  ]
+}
