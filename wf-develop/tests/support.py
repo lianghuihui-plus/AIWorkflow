@@ -1,4 +1,4 @@
-"""Shared paths and subprocess helpers for rewrite tests."""
+"""Shared paths and subprocess helpers for AIWorkFlow tests."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-REWRITE_ROOT = Path(__file__).resolve().parents[1]
-DEVELOP_ROOT = REWRITE_ROOT.parent
+DEVELOP_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = DEVELOP_ROOT.parent
-SOURCE_ROOT = REWRITE_ROOT / "src"
+SOURCE_ROOT = DEVELOP_ROOT
 TOOLS_ROOT = SOURCE_ROOT / "wf" / "tools"
 CLI_PATH = TOOLS_ROOT / "aiwf.py"
 sys.path.insert(0, str(TOOLS_ROOT))
@@ -22,7 +21,7 @@ from aiwf_core.workflow import WorkflowEngine  # noqa: E402
 def run_cli(
     arguments: Sequence[str],
     *,
-    cwd: Path = REWRITE_ROOT,
+    cwd: Path = DEVELOP_ROOT,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(CLI_PATH), *arguments],

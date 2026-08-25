@@ -7,11 +7,12 @@ from support import DEVELOP_ROOT, REPOSITORY_ROOT, SOURCE_ROOT
 
 
 class ReleaseIsolationTests(unittest.TestCase):
-    def test_rewrite_source_is_contained_in_develop(self) -> None:
+    def test_formal_source_is_the_develop_directory(self) -> None:
         self.assertTrue(SOURCE_ROOT.is_relative_to(DEVELOP_ROOT))
-        self.assertEqual(SOURCE_ROOT.parent.name, "_rewrite")
+        self.assertEqual(SOURCE_ROOT, DEVELOP_ROOT)
+        self.assertFalse((DEVELOP_ROOT / "_rewrite").exists())
 
-    def test_rewrite_source_does_not_resolve_into_release(self) -> None:
+    def test_develop_source_does_not_resolve_into_release(self) -> None:
         release_root = (REPOSITORY_ROOT / "wf-release").resolve()
         for path in SOURCE_ROOT.rglob("*"):
             if path.is_symlink():

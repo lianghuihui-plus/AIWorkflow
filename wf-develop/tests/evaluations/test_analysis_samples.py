@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import unittest
 from pathlib import Path
+
+from support import DEVELOP_ROOT
 
 
 class AnalysisEvaluationSampleTests(unittest.TestCase):
@@ -19,6 +22,9 @@ class AnalysisEvaluationSampleTests(unittest.TestCase):
             self.assertRegex(sample["sha256"], re.compile(r"^[0-9a-f]{64}$"))
             self.assertTrue(sample["source"].endswith(".md"))
             self.assertTrue(sample["selection_reason"].strip())
+            source = (DEVELOP_ROOT / sample["source"]).resolve()
+            self.assertTrue(source.is_file(), source)
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), sample["sha256"])
 
 
 if __name__ == "__main__":
