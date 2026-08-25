@@ -454,6 +454,17 @@ class WorkspaceStore:
         self._cleanup_orphan_work_locked(recovered)
         return recovered
 
+    def replace_generated_locked(self, relative_path: str | Path, content: bytes) -> None:
+        target = self.safe_path(relative_path)
+        if target.exists() and not target.is_file():
+            raise AIWorkflowError(
+                code="generated_target_invalid",
+                message="Generated output target must be a file.",
+                exit_code=4,
+                details={"path": str(relative_path)},
+            )
+        self._atomic_write(target, content)
+
     def _cleanup_orphan_work_locked(self, recovered: list[str]) -> None:
         state_path = self.data_root / "state.json"
         work_root = self.data_root / "work"

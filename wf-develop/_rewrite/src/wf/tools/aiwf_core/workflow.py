@@ -22,7 +22,7 @@ from .artifacts import (
 from .context import build_work, copy_successor_work, validate_work
 from .initialization import prepare_initialization
 from .model import AIWorkflowError, CommandRequest, SCHEMA_VERSION, next_id, now_iso
-from .render import render_memory
+from .render import DASHBOARD_FILENAME, render_dashboard, render_memory
 from .repository import inspect_repository
 from .review import advance_after_approval, apply_memory_delta, approve_indexes
 from .storage import WorkspaceStore, json_bytes, sha256_bytes
@@ -1085,6 +1085,48 @@ class WorkflowEngine:
                 "issues": issues,
             }
 
+    def render(self) -> dict[str, Any]:
+        with self.store.lock(exclusive=True):
+            self.store.recover_locked()
+            documents = {
+                name: self.store.read_json(name)
+                for name in (
+                    "project.json",
+                    "state.json",
+                    "requirements.json",
+                    "tasks.json",
+                    "artifacts.json",
+                    "decisions.json",
+                    "questions.json",
+                    "memory.json",
+                )
+            }
+            artifact_bodies: dict[str, str] = {}
+            for artifact in documents["artifacts.json"]["items"]:
+                path = self.store.safe_path(artifact["path"])
+                try:
+                    artifact_bodies[artifact["id"]] = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    artifact_bodies[artifact["id"]] = "Artifact content is unavailable."
+            content = render_dashboard(
+                project=documents["project.json"],
+                state=documents["state.json"],
+                requirements=documents["requirements.json"],
+                tasks=documents["tasks.json"],
+                artifacts=documents["artifacts.json"],
+                questions=documents["questions.json"],
+                decisions=documents["decisions.json"],
+                memory=documents["memory.json"],
+                events=self.store.read_events(),
+                artifact_bodies=artifact_bodies,
+            ).encode("utf-8")
+            self.store.replace_generated_locked(DASHBOARD_FILENAME, content)
+            return {
+                "status": "rendered",
+                "path": str(self.store.root / DASHBOARD_FILENAME),
+                "bytes": len(content),
+            }
+
     def _next_action(self, state: dict[str, Any]) -> str:
         if state["mode"] == "review":
             return "review"
@@ -1371,28 +1413,37 @@ class WorkflowEngine:
 def execute(request: CommandRequest) -> dict[str, Any]:
     engine = WorkflowEngine(request.workspace)
     if request.command == "init":
-        return engine.initialize(
-            name=request.options.get("name", request.workspace.name),
-            platform=request.options["platform"],
-            prd_paths=request.options["prd"],
-            code_repository=request.options.get("code_repository"),
-            project_id=request.options.get("project_id"),
+        return _with_dashboard(
+            engine,
+            engine.initialize(
+                name=request.options.get("name", request.workspace.name),
+                platform=request.options["platform"],
+                prd_paths=request.options["prd"],
+                code_repository=request.options.get("code_repository"),
+                project_id=request.options.get("project_id"),
+            ),
         )
     if request.command == "status":
         return engine.inspect()
     if request.command == "prepare":
-        return engine.prepare_work(
-            active_item=request.options.get("task_id"),
-            instruction=request.options.get("instruction", ""),
+        return _with_dashboard(
+            engine,
+            engine.prepare_work(
+                active_item=request.options.get("task_id"),
+                instruction=request.options.get("instruction", ""),
+            ),
         )
     if request.command == "submit":
-        return engine.submit_work(request.options["work_id"])
+        return _with_dashboard(engine, engine.submit_work(request.options["work_id"]))
     if request.command == "review":
-        return engine.review_artifact(
-            request.options["artifact_id"],
-            request.options["revision"],
-            outcome=request.options["outcome"],
-            feedback=request.options.get("feedback", ""),
+        return _with_dashboard(
+            engine,
+            engine.review_artifact(
+                request.options["artifact_id"],
+                request.options["revision"],
+                outcome=request.options["outcome"],
+                feedback=request.options.get("feedback", ""),
+            ),
         )
     if request.command == "question":
         try:
@@ -1409,16 +1460,40 @@ def execute(request: CommandRequest) -> dict[str, Any]:
                 message="Blocking questions must be a valid JSON array.",
                 exit_code=2,
             )
-        return engine.open_questions(request.options["work_id"], questions)
+        return _with_dashboard(
+            engine,
+            engine.open_questions(request.options["work_id"], questions),
+        )
     if request.command == "decide":
-        return engine.decide(request.options["question_id"], request.options["decision"])
+        return _with_dashboard(
+            engine,
+            engine.decide(request.options["question_id"], request.options["decision"]),
+        )
+    if request.command == "render":
+        return engine.render()
     raise AIWorkflowError(
         code="command_not_implemented",
         message=f"Command '{request.command}' is not connected before its implementation phase.",
         exit_code=3,
         details={
             "command": request.command,
-            "phase": 4,
+            "phase": 7,
             "workspace": str(request.workspace),
         },
     )
+
+
+def _with_dashboard(engine: WorkflowEngine, result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        engine.render()
+    except Exception as error:
+        return {
+            **result,
+            "warnings": [
+                {
+                    "type": "dashboard_render_failed",
+                    "error": error.code if isinstance(error, AIWorkflowError) else "render_failed",
+                }
+            ],
+        }
+    return result
