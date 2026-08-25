@@ -31,7 +31,7 @@ class CommandLineTests(unittest.TestCase):
             completed = run_cli(["--version"], cwd=Path(directory))
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "aiwf 0.1.0.dev1")
+        self.assertEqual(completed.stdout.strip(), "aiwf 0.2.0.dev1")
 
     def test_unimplemented_command_returns_structured_error(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:

@@ -228,6 +228,7 @@ workspace/
   "mode": "ready",
   "active_item": null,
   "active_work": null,
+  "active_work_sha256": null,
   "pending_reviews": [],
   "blocking_questions": [],
   "updated_at": "2026-08-25T10:00:00+08:00"
@@ -251,6 +252,7 @@ workspace/
 - `blocked`：等待用户决策或必要输入
 
 复杂状态由 `current_stage + mode + active_item + active_work` 表达，不再创建大量组合状态名称。
+`active_work_sha256` 保护引擎生成的任务包元数据；Agent 只允许修改任务包指定的草稿和结果文件。
 
 ### 5.3 `requirements.json`
 
@@ -333,8 +335,10 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
       "type": "specification",
       "path": "artifacts/specs/T-001.md",
       "result_path": ".aiwf/results/T-001-spec/2.json",
+      "work_path": ".aiwf/history/T-001-spec/2.work.json",
       "content_sha256": "...",
       "result_sha256": "...",
+      "work_sha256": "...",
       "status": "review",
       "revision": 2,
       "approved_revision": 1,
@@ -359,7 +363,7 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 旧版本的审核结论。审核意见、审核时间和操作者作为事件关联到明确 revision，注册表只保留
 当前查询所需的摘要。
 
-正式产物和结果清单的摘要必须与注册表哈希一致。发现工作流外修改时，`status` 只报告
+正式产物、结果清单和 revision 对应 work 快照的摘要必须与注册表哈希一致。发现工作流外修改时，`status` 只报告
 `artifact_drift`；审核和阶段推进必须拒绝继续。只有在用户明确要求采纳该修改后，`wf` 才能
 把它作为新 work 的草稿重新提交为新 revision，不得沿用旧审核状态。
 
@@ -948,6 +952,8 @@ stateDiagram-v2
 - `git diff -- wf-release` 为空
 
 ### 阶段 2：数据内核
+
+实施状态：已完成。
 
 目标：完成项目、状态、产物、决策、问题、事件和记忆的存储模型。
 
