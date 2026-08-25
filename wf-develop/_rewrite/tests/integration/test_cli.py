@@ -33,18 +33,16 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.strip(), "aiwf 0.7.0.dev1")
 
-    def test_unimplemented_command_returns_structured_error(self) -> None:
+    def test_migrate_rejects_a_non_legacy_directory(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
             completed = run_cli(["migrate", "--workspace", workspace])
 
-        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(completed.returncode, 4)
         self.assertEqual(completed.stdout, "")
         self.assertNotIn("Traceback", completed.stderr)
         payload = json.loads(completed.stderr)
         self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"]["code"], "command_not_implemented")
-        self.assertEqual(payload["error"]["details"]["command"], "migrate")
-        self.assertEqual(payload["error"]["details"]["workspace"], str(Path(workspace).resolve()))
+        self.assertEqual(payload["error"]["code"], "legacy_workspace_not_found")
 
     def test_missing_workspace_returns_structured_error(self) -> None:
         completed = run_cli(["status", "--workspace", "/path/that/does/not/exist"])

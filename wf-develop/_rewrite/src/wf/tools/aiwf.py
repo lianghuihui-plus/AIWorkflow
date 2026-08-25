@@ -95,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
         elif spec.name == "decide":
             command_parser.add_argument("--question-id", required=True, help="Open question id.")
             command_parser.add_argument("--decision", required=True, help="User decision text.")
+        elif spec.name == "migrate":
+            command_parser.add_argument(
+                "--apply",
+                action="store_true",
+                help="Apply the migration after reviewing the default preview.",
+            )
 
     return parser
 

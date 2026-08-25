@@ -22,6 +22,7 @@ from .artifacts import (
 from .context import build_work, copy_successor_work, validate_work
 from .initialization import prepare_initialization
 from .model import AIWorkflowError, CommandRequest, SCHEMA_VERSION, next_id, now_iso
+from .migration import apply_migration, preview_migration
 from .render import DASHBOARD_FILENAME, render_dashboard, render_memory
 from .repository import inspect_repository
 from .review import advance_after_approval, apply_memory_delta, approve_indexes
@@ -58,6 +59,11 @@ class WorkflowEngine:
     def recover(self) -> list[str]:
         with self.store.lock(exclusive=True):
             return self.store.recover_locked()
+
+    def migrate(self, *, apply: bool) -> dict[str, Any]:
+        if apply:
+            return apply_migration(self.store)
+        return preview_migration(self.store.root)
 
     def prepare_work(
         self,
@@ -1471,6 +1477,9 @@ def execute(request: CommandRequest) -> dict[str, Any]:
         )
     if request.command == "render":
         return engine.render()
+    if request.command == "migrate":
+        result = engine.migrate(apply=bool(request.options.get("apply")))
+        return _with_dashboard(engine, result) if result["status"] == "migrated" else result
     raise AIWorkflowError(
         code="command_not_implemented",
         message=f"Command '{request.command}' is not connected before its implementation phase.",

@@ -85,6 +85,8 @@ class WorkspaceStore:
         project: Mapping[str, Any],
         *,
         prd_files: Mapping[str, bytes] | None = None,
+        allow_existing: bool = False,
+        reuse_existing_prd: bool = False,
     ) -> None:
         if not self.root.is_dir():
             raise AIWorkflowError(
@@ -94,7 +96,7 @@ class WorkspaceStore:
                 details={"path": str(self.root)},
             )
         existing_entries = list(self.root.iterdir())
-        if existing_entries:
+        if existing_entries and not allow_existing:
             raise AIWorkflowError(
                 code="workspace_not_empty",
                 message="Workspace directory must be empty before initialization.",
@@ -103,6 +105,25 @@ class WorkspaceStore:
                     "path": str(self.root),
                     "entries": sorted(path.name for path in existing_entries),
                 },
+            )
+        if allow_existing:
+            conflicts = [
+                path.name
+                for path in (self.data_root, self.root / "artifacts", self.root / "legacy-backup")
+                if path.exists()
+            ]
+            if conflicts:
+                raise AIWorkflowError(
+                    code="migration_target_exists",
+                    message="New workflow or migration backup targets already exist.",
+                    exit_code=5,
+                    details={"entries": conflicts},
+                )
+        if reuse_existing_prd and not (self.root / "prd").is_dir():
+            raise AIWorkflowError(
+                code="legacy_prd_missing",
+                message="Legacy workspace must contain a prd directory.",
+                exit_code=4,
             )
 
         timestamp = now_iso()
@@ -151,7 +172,8 @@ class WorkspaceStore:
         installed_paths: list[Path] = []
         try:
             temporary_root.mkdir()
-            temporary_prd.mkdir()
+            if not reuse_existing_prd:
+                temporary_prd.mkdir()
             temporary_artifacts.mkdir()
             for directory in ("results", "history", "work", "transactions"):
                 (temporary_root / directory).mkdir(parents=True)
@@ -170,16 +192,19 @@ class WorkspaceStore:
             (temporary_root / "events.jsonl").write_bytes(json_line(event))
             (temporary_root / "memory.md").write_text("# Project Memory\n", encoding="utf-8")
             (temporary_root / "workspace.lock").touch()
-            for filename, content in copied_prd.items():
-                (temporary_prd / filename).write_bytes(content)
+            if not reuse_existing_prd:
+                for filename, content in copied_prd.items():
+                    (temporary_prd / filename).write_bytes(content)
             for directory in ("specs", "reports", "tests"):
                 (temporary_artifacts / directory).mkdir()
 
-            for source, target in (
-                (temporary_prd, self.root / "prd"),
+            installs = [
                 (temporary_artifacts, self.root / "artifacts"),
                 (temporary_root, self.data_root),
-            ):
+            ]
+            if not reuse_existing_prd:
+                installs.insert(0, (temporary_prd, self.root / "prd"))
+            for source, target in installs:
                 os.replace(source, target)
                 installed_paths.append(target)
                 self._fsync_directory(self.root)
