@@ -14,6 +14,7 @@ from .artifacts import (
     reconcile_requirements,
     reconcile_tasks,
     replace_artifact,
+    result_schema,
     semantic_result_hash,
     sha256_content,
     validate_result_manifest,
@@ -58,7 +59,31 @@ class WorkflowEngine:
 
     def recover(self) -> list[str]:
         with self.store.lock(exclusive=True):
-            return self.store.recover_locked()
+            return self._recover_and_sync_locked()
+
+    def recover_workspace(self) -> dict[str, Any]:
+        recovered = self.recover()
+        return {
+            "status": "recovered",
+            "workspace": str(self.store.root),
+            "recovered": recovered,
+        }
+
+    def _recover_and_sync_locked(self) -> list[str]:
+        recovered = self.store.recover_locked()
+        expected = render_memory(
+            self.store.read_json("memory.json"),
+            self.store.read_json("decisions.json"),
+        ).encode("utf-8")
+        path = self.store.safe_path(".aiwf/memory.md")
+        try:
+            actual = path.read_bytes()
+        except OSError:
+            actual = None
+        if actual != expected:
+            self.store.replace_generated_locked(".aiwf/memory.md", expected)
+            recovered.append("generated:memory.md:rebuilt")
+        return recovered
 
     def migrate(self, *, apply: bool) -> dict[str, Any]:
         if apply:
@@ -78,7 +103,7 @@ class WorkflowEngine:
         instruction: str = "",
     ) -> dict[str, Any]:
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             state = self.store.read_json("state.json")
             if state["mode"] == "working":
                 return self._read_work(
@@ -131,6 +156,9 @@ class WorkflowEngine:
                 sources=list(sources),
                 stage_guide=stage_guide,
                 constraints=list(constraints),
+                global_memory_sha256=sha256_content(
+                    self.store.safe_path(".aiwf/memory.md").read_bytes()
+                ),
                 facts=facts,
                 repository_context=repository_context,
             )
@@ -147,6 +175,7 @@ class WorkflowEngine:
             )
             changes: dict[str, bytes | None] = {
                 self._work_path(work_id, "work.json"): work_bytes,
+                work["result_output"]: json_bytes(work["result_template"]),
                 ".aiwf/state.json": json_bytes(updated_state),
             }
 
@@ -161,7 +190,7 @@ class WorkflowEngine:
                     )
                 verify_artifact_integrity(self.store.root, artifact)
                 changes[work["draft_output"]] = self.store.safe_path(artifact["path"]).read_bytes()
-                changes[work["result_output"]] = self.store.safe_path(artifact["result_path"]).read_bytes()
+                changes[work["result_output"]] = self._editable_result_bytes(artifact)
 
             request_digest = self._digest({"work": work})
             self.store.commit_locked(
@@ -425,7 +454,7 @@ class WorkflowEngine:
     def submit_work(self, work_id: str) -> dict[str, Any]:
         command_key = f"submit:{work_id}"
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             existing_event = self.store.find_event(command_key)
             if existing_event is not None:
                 shutil.rmtree(self.store.data_root / "work" / work_id, ignore_errors=True)
@@ -618,7 +647,7 @@ class WorkflowEngine:
             {"artifact_id": artifact_id, "revision": revision, "outcome": outcome}
         )
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             existing_event = self.store.find_event(command_key)
             if existing_event is not None:
                 return dict(existing_event["data"])
@@ -704,28 +733,20 @@ class WorkflowEngine:
             )
             return dict(event["data"])
 
-    def request_revision(self, artifact_id: str, *, feedback: str) -> dict[str, Any]:
-        with self.store.lock(exclusive=False):
-            if self.store.has_pending_transactions():
-                raise AIWorkflowError(
-                    code="needs_recovery",
-                    message="Workspace has an incomplete transaction.",
-                    exit_code=6,
-                )
-            artifact = find_artifact(self.store.read_json("artifacts.json"), artifact_id)
-            if artifact is None:
-                raise AIWorkflowError(
-                    code="unknown_artifact",
-                    message="Cannot revise an unknown artifact.",
-                    exit_code=4,
-                    details={"artifact_id": artifact_id},
-                )
-            revision = artifact["revision"]
+    def request_revision(
+        self,
+        artifact_id: str,
+        revision: int,
+        *,
+        feedback: str,
+        supersede_active_work: bool = False,
+    ) -> dict[str, Any]:
         return self._request_changes(
             artifact_id,
             revision,
             feedback=feedback,
             command_prefix="revise",
+            supersede_active_work=supersede_active_work,
         )
 
     def open_questions(
@@ -736,7 +757,7 @@ class WorkflowEngine:
         command_key = f"question:{work_id}"
         request_digest = self._digest({"questions": list(questions)})
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             existing_event = self.store.find_event(command_key)
             if existing_event is not None:
                 if existing_event["request_digest"] != request_digest:
@@ -825,7 +846,7 @@ class WorkflowEngine:
         command_key = f"decide:{question_id}"
         request_digest = self._digest({"question_id": question_id, "decision": decision})
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             existing_event = self.store.find_event(command_key)
             if existing_event is not None:
                 if existing_event["request_digest"] != request_digest:
@@ -884,22 +905,27 @@ class WorkflowEngine:
             updated_state = dict(state)
             updated_state["blocking_questions"] = remaining
             updated_state["updated_at"] = timestamp
+            updated_memory_bytes = render_memory(
+                self.store.read_json("memory.json"), updated_decisions
+            ).encode("utf-8")
             changes: dict[str, bytes | None] = {
                 ".aiwf/questions.json": json_bytes(updated_questions),
                 ".aiwf/decisions.json": json_bytes(updated_decisions),
-                ".aiwf/memory.md": render_memory(
-                    self.store.read_json("memory.json"), updated_decisions
-                ).encode("utf-8"),
+                ".aiwf/memory.md": updated_memory_bytes,
             }
             successor_work_id: str | None = None
             previous_work_id = state["active_work"]
+            previous_work = self._read_work(
+                previous_work_id,
+                expected_hash=state["active_work_sha256"],
+            )
             if not remaining:
-                previous_work = self._read_work(
-                    previous_work_id,
-                    expected_hash=state["active_work_sha256"],
-                )
                 successor_work_id = self._next_work_id()
-                successor = copy_successor_work(previous_work, work_id=successor_work_id)
+                successor = copy_successor_work(
+                    previous_work,
+                    work_id=successor_work_id,
+                    global_memory_sha256=sha256_content(updated_memory_bytes),
+                )
                 successor_bytes = json_bytes(successor)
                 changes[self._work_path(successor_work_id, "work.json")] = successor_bytes
                 for source_name, target_name in (
@@ -916,6 +942,14 @@ class WorkflowEngine:
                         "active_work_sha256": sha256_content(successor_bytes),
                     }
                 )
+            else:
+                updated_work = {
+                    **previous_work,
+                    "global_memory_sha256": sha256_content(updated_memory_bytes),
+                }
+                updated_work_bytes = json_bytes(updated_work)
+                changes[self._work_path(previous_work_id, "work.json")] = updated_work_bytes
+                updated_state["active_work_sha256"] = sha256_content(updated_work_bytes)
             changes[".aiwf/state.json"] = json_bytes(updated_state)
             event = self.store.commit_locked(
                 changes,
@@ -950,6 +984,22 @@ class WorkflowEngine:
                 "memory.json",
             )}
             issues: list[dict[str, Any]] = []
+            expected_memory = render_memory(
+                documents["memory.json"], documents["decisions.json"]
+            ).encode("utf-8")
+            try:
+                actual_memory = self.store.safe_path(".aiwf/memory.md").read_bytes()
+            except OSError:
+                actual_memory = None
+            if actual_memory != expected_memory:
+                issues.append(
+                    {
+                        "level": "error",
+                        "type": "generated_view_drift",
+                        "message": "Generated memory.md does not match its structured sources.",
+                        "details": {"path": ".aiwf/memory.md"},
+                    }
+                )
             for artifact in documents["artifacts.json"]["items"]:
                 try:
                     verify_artifact_integrity(self.store.root, artifact)
@@ -1093,7 +1143,7 @@ class WorkflowEngine:
 
     def render(self) -> dict[str, Any]:
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             documents = {
                 name: self.store.read_json(name)
                 for name in (
@@ -1108,7 +1158,14 @@ class WorkflowEngine:
                 )
             }
             artifact_bodies: dict[str, str] = {}
+            health_issues: list[dict[str, Any]] = []
             for artifact in documents["artifacts.json"]["items"]:
+                try:
+                    verify_artifact_integrity(self.store.root, artifact)
+                except AIWorkflowError as error:
+                    health_issues.append(
+                        {"type": error.code, "message": error.message}
+                    )
                 path = self.store.safe_path(artifact["path"])
                 try:
                     artifact_bodies[artifact["id"]] = path.read_text(encoding="utf-8")
@@ -1125,6 +1182,8 @@ class WorkflowEngine:
                 memory=documents["memory.json"],
                 events=self.store.read_events(),
                 artifact_bodies=artifact_bodies,
+                next_action=self._next_action(documents["state.json"]),
+                health_issues=health_issues,
             ).encode("utf-8")
             self.store.replace_generated_locked(DASHBOARD_FILENAME, content)
             return {
@@ -1156,6 +1215,7 @@ class WorkflowEngine:
         *,
         feedback: str,
         command_prefix: str,
+        supersede_active_work: bool = False,
     ) -> dict[str, Any]:
         if not feedback.strip():
             raise AIWorkflowError(
@@ -1164,11 +1224,16 @@ class WorkflowEngine:
                 exit_code=4,
             )
         command_key = f"{command_prefix}:{artifact_id}@{revision}:changes_requested"
-        request_digest = self._digest(
-            {"artifact_id": artifact_id, "revision": revision, "feedback": feedback}
-        )
+        digest_input: dict[str, Any] = {
+            "artifact_id": artifact_id,
+            "revision": revision,
+            "feedback": feedback,
+        }
+        if command_prefix == "revise":
+            digest_input["supersede_active_work"] = supersede_active_work
+        request_digest = self._digest(digest_input)
         with self.store.lock(exclusive=True):
-            self.store.recover_locked()
+            self._recover_and_sync_locked()
             existing_event = self.store.find_event(command_key)
             if existing_event is not None:
                 if existing_event["request_digest"] != request_digest:
@@ -1197,12 +1262,26 @@ class WorkflowEngine:
                         exit_code=6,
                     )
                 self._reject_conflicting_review(artifact_id, revision, command_key)
-            elif state["mode"] != "ready":
-                raise AIWorkflowError(
-                    code="invalid_state_transition",
-                    message="Approved artifact revisions require a ready workspace.",
-                    exit_code=6,
-                )
+            else:
+                if artifact["status"] != "approved" or artifact["approved_revision"] != revision:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Only the current approved artifact revision can be revised.",
+                        exit_code=6,
+                    )
+                if state["mode"] == "review":
+                    raise AIWorkflowError(
+                        code="active_review_conflict",
+                        message="Resolve the pending artifact review before revising another artifact.",
+                        exit_code=6,
+                    )
+                if state["mode"] != "ready" and not supersede_active_work:
+                    raise AIWorkflowError(
+                        code="active_work_conflict",
+                        message="Revision would replace unfinished work; explicit confirmation is required.",
+                        exit_code=6,
+                        details={"active_work": state["active_work"], "mode": state["mode"]},
+                    )
             verify_artifact_integrity(self.store.root, artifact)
             previous_work = self.store.read_json_path(artifact["work_path"])
             validate_work(previous_work)
@@ -1211,6 +1290,9 @@ class WorkflowEngine:
                 previous_work,
                 work_id=work_id,
                 feedback=feedback,
+                global_memory_sha256=sha256_content(
+                    self.store.safe_path(".aiwf/memory.md").read_bytes()
+                ),
             )
             updated_artifact = {**artifact, "status": "changes_requested", "updated_at": now_iso()}
             artifacts = replace_artifact(artifacts, updated_artifact)
@@ -1227,14 +1309,50 @@ class WorkflowEngine:
                     "updated_at": now_iso(),
                 }
             )
+            changes: dict[str, bytes | None] = {
+                ".aiwf/artifacts.json": json_bytes(artifacts),
+                ".aiwf/state.json": json_bytes(updated_state),
+                self._work_path(work_id, "work.json"): json_bytes(successor),
+                successor["draft_output"]: self.store.safe_path(artifact["path"]).read_bytes(),
+                successor["result_output"]: self._editable_result_bytes(artifact),
+            }
+            additional_events: list[tuple[str, Mapping[str, Any]]] = []
+            superseded_work_id: str | None = None
+            if command_prefix == "revise" and state["mode"] in {"working", "blocked"}:
+                superseded_work_id = state["active_work"]
+                previous_active = self._read_work(
+                    superseded_work_id,
+                    expected_hash=state["active_work_sha256"],
+                )
+                abandoned = {**previous_active, "status": "abandoned"}
+                archive_root = f".aiwf/history/abandoned/{superseded_work_id}"
+                changes[f"{archive_root}/work.json"] = json_bytes(abandoned)
+                for source_name, filename in (
+                    (previous_active["draft_output"], "artifact.md"),
+                    (previous_active["result_output"], "result.json"),
+                ):
+                    source_path = self.store.safe_path(source_name)
+                    if source_path.is_file():
+                        changes[f"{archive_root}/{filename}"] = source_path.read_bytes()
+                if state["mode"] == "blocked":
+                    questions = self.store.read_json("questions.json")
+                    superseded_questions = []
+                    blocking = set(state["blocking_questions"])
+                    for item in questions["items"]:
+                        if item["id"] in blocking and item["status"] == "open":
+                            item = {**item, "status": "superseded"}
+                        superseded_questions.append(item)
+                    changes[".aiwf/questions.json"] = json_bytes(
+                        {"schema_version": SCHEMA_VERSION, "items": superseded_questions}
+                    )
+                additional_events.append(
+                    (
+                        "work_superseded",
+                        {"work_id": superseded_work_id, "replaced_by": work_id},
+                    )
+                )
             event = self.store.commit_locked(
-                {
-                    ".aiwf/artifacts.json": json_bytes(artifacts),
-                    ".aiwf/state.json": json_bytes(updated_state),
-                    self._work_path(work_id, "work.json"): json_bytes(successor),
-                    successor["draft_output"]: self.store.safe_path(artifact["path"]).read_bytes(),
-                    successor["result_output"]: self.store.safe_path(artifact["result_path"]).read_bytes(),
-                },
+                changes,
                 event_type="changes_requested",
                 event_data={
                     "artifact_id": artifact_id,
@@ -1244,7 +1362,13 @@ class WorkflowEngine:
                 },
                 command_key=command_key,
                 request_digest=request_digest,
+                additional_events=additional_events,
             )
+            if superseded_work_id is not None:
+                shutil.rmtree(
+                    self.store.data_root / "work" / superseded_work_id,
+                    ignore_errors=True,
+                )
             return dict(event["data"])
 
     def _read_work(
@@ -1277,7 +1401,24 @@ class WorkflowEngine:
                 exit_code=7,
                 details={"work_id": work_id},
             )
-        return validate_work(value)
+        work = validate_work(value)
+        try:
+            memory_bytes = self.store.safe_path(work["global_memory"]).read_bytes()
+        except OSError as error:
+            raise AIWorkflowError(
+                code="memory_drift",
+                message="Task memory projection cannot be read.",
+                exit_code=7,
+                details={"work_id": work_id},
+            ) from error
+        if sha256_content(memory_bytes) != work["global_memory_sha256"]:
+            raise AIWorkflowError(
+                code="memory_drift",
+                message="Task memory changed after the work packet was prepared.",
+                exit_code=7,
+                details={"work_id": work_id},
+            )
+        return work
 
     def _next_work_id(self) -> str:
         existing: list[str] = []
@@ -1408,6 +1549,13 @@ class WorkflowEngine:
     def _work_path(self, work_id: str, filename: str) -> str:
         return f".aiwf/work/{work_id}/{filename}"
 
+    def _editable_result_bytes(self, artifact: Mapping[str, Any]) -> bytes:
+        result = self.store.read_json_path(artifact["result_path"])
+        editable_fields = set(result_schema(artifact["stage"])["properties"])
+        return json_bytes(
+            {key: value for key, value in result.items() if key in editable_fields}
+        )
+
     def _digest(self, value: Any) -> str:
         return sha256_bytes(
             json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
@@ -1429,6 +1577,8 @@ def execute(request: CommandRequest) -> dict[str, Any]:
                 project_id=request.options.get("project_id"),
             ),
         )
+    if request.command == "recover":
+        return _with_dashboard(engine, engine.recover_workspace())
     if request.command == "status":
         return engine.inspect()
     if request.command == "prepare":
@@ -1449,6 +1599,16 @@ def execute(request: CommandRequest) -> dict[str, Any]:
                 request.options["revision"],
                 outcome=request.options["outcome"],
                 feedback=request.options.get("feedback", ""),
+            ),
+        )
+    if request.command == "revise":
+        return _with_dashboard(
+            engine,
+            engine.request_revision(
+                request.options["artifact_id"],
+                request.options["revision"],
+                feedback=request.options["feedback"],
+                supersede_active_work=bool(request.options.get("supersede_active_work")),
             ),
         )
     if request.command == "question":

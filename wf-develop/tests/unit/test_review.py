@@ -5,10 +5,37 @@ import unittest
 import support  # noqa: F401
 
 from aiwf_core.model import SCHEMA_VERSION
-from aiwf_core.review import apply_memory_delta
+from aiwf_core.model import AIWorkflowError
+from aiwf_core.review import apply_memory_delta, approve_indexes
 
 
 class MemoryReviewTests(unittest.TestCase):
+    def test_analysis_approval_rejects_legacy_unresolved_requirements(self) -> None:
+        requirements = {
+            "schema_version": SCHEMA_VERSION,
+            "items": [
+                {
+                    "id": "REQ-001",
+                    "title": "Unresolved",
+                    "summary": "Unresolved",
+                    "disposition": "needs_decision",
+                    "sources": ["prd/input.md"],
+                    "origin_revision": 1,
+                }
+            ],
+        }
+
+        with self.assertRaises(AIWorkflowError) as raised:
+            approve_indexes(
+                stage="analysis",
+                revision=1,
+                active_item=None,
+                requirements=requirements,
+                tasks={"schema_version": SCHEMA_VERSION, "items": []},
+            )
+
+        self.assertEqual(raised.exception.code, "unresolved_requirements")
+
     def test_memory_entries_can_be_added_updated_and_retracted_by_stable_id(self) -> None:
         memory = {"schema_version": SCHEMA_VERSION, "items": []}
         memory = apply_memory_delta(

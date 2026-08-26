@@ -58,6 +58,8 @@ def render_dashboard(
     memory: dict[str, Any],
     events: list[dict[str, Any]],
     artifact_bodies: dict[str, str],
+    next_action: str,
+    health_issues: list[dict[str, Any]],
 ) -> str:
     stage_index = STAGES.index(state["current_stage"])
     stage_markup = []
@@ -134,6 +136,17 @@ def render_dashboard(
         "</li>"
         for item in active_memory
     ) or '<li class="empty">暂无长期记忆</li>'
+    review_markup = "".join(
+        f"<li><strong>{_escape(reference)}</strong></li>"
+        for reference in state["pending_reviews"]
+    ) or '<li class="empty">无待审核产物</li>'
+    health_markup = "".join(
+        "<li>"
+        f"<strong>{_escape(item['type'])}</strong>"
+        f"<span>{_escape(item['message'])}</span>"
+        "</li>"
+        for item in health_issues
+    ) or '<li class="empty">未发现健康问题</li>'
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -155,13 +168,15 @@ main {{ max-width:1180px; margin:0 auto; padding:24px; }}
 .stage span {{ display:inline-grid; place-items:center; width:24px; height:24px; margin-right:7px; border:1px solid var(--line); border-radius:50%; }}
 .stage.done {{ color:var(--green); }} .stage.current {{ color:var(--blue); font-weight:700; box-shadow:inset 0 -3px var(--blue); }}
 .grid {{ display:grid; grid-template-columns:minmax(0,2fr) minmax(280px,1fr); gap:20px; align-items:start; }}
+.action {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; margin:0 0 20px; border:1px solid var(--line); background:var(--line); }}
+.action div {{ min-width:0; padding:12px; background:var(--paper); }} .action b,.action span {{ display:block; overflow-wrap:anywhere; }} .action span {{ color:var(--muted); font-size:12px; }}
 section {{ margin-bottom:20px; }} h2 {{ margin:0 0 10px; font-size:17px; }}
 .panel {{ background:var(--paper); border:1px solid var(--line); padding:16px; }}
 table {{ width:100%; border-collapse:collapse; background:var(--paper); }} th,td {{ text-align:left; vertical-align:top; padding:10px; border:1px solid var(--line); overflow-wrap:anywhere; }} th {{ background:#eef1f4; font-weight:600; }}
 ul.list {{ list-style:none; margin:0; padding:0; }} .list li {{ padding:10px 0; border-bottom:1px solid var(--line); }} .list li:last-child {{ border:0; }} .list strong,.list span {{ display:block; overflow-wrap:anywhere; }} .list span {{ color:var(--muted); margin-top:3px; }}
 details {{ background:var(--paper); border:1px solid var(--line); margin-bottom:8px; }} summary {{ cursor:pointer; padding:12px; font-weight:600; }} pre {{ margin:0; border-top:1px solid var(--line); padding:14px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }}
 .empty {{ color:var(--muted); }}
-@media (max-width:800px) {{ main {{ padding:14px; }} .summary {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .pipeline {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .stage {{ border-bottom:1px solid var(--line); }} .grid {{ grid-template-columns:1fr; }} table {{ display:block; overflow-x:auto; }} }}
+@media (max-width:800px) {{ main {{ padding:14px; }} .summary,.action {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .pipeline {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .stage {{ border-bottom:1px solid var(--line); }} .grid {{ grid-template-columns:1fr; }} table {{ display:block; overflow-x:auto; }} }}
 </style>
 </head>
 <body>
@@ -174,6 +189,12 @@ details {{ background:var(--paper); border:1px solid var(--line); margin-bottom:
 <div class="metric"><b>{len(open_questions)}</b><span>阻塞问题</span></div>
 </div>
 <ol class="pipeline">{''.join(stage_markup)}</ol>
+<div class="action">
+<div><span>下一步</span><b>{_escape(next_action)}</b></div>
+<div><span>当前任务</span><b>{_escape(state['active_item'] or '-')}</b></div>
+<div><span>活动 Work</span><b>{_escape(state['active_work'] or '-')}</b></div>
+<div><span>待审核</span><b>{len(state['pending_reviews'])}</b></div>
+</div>
 <div class="grid"><div>
 <section><h2>需求追踪</h2>{_table(("ID","标题","状态","来源"), requirement_rows)}</section>
 <section><h2>任务追踪</h2>{_table(("ID","标题","状态","需求","依赖"), task_rows)}</section>
@@ -181,6 +202,8 @@ details {{ background:var(--paper); border:1px solid var(--line); margin-bottom:
 <section><h2>产物预览</h2>{''.join(previews) or '<div class="panel empty">暂无产物</div>'}</section>
 </div><aside>
 <section class="panel"><h2>阻塞问题</h2><ul class="list">{question_markup}</ul></section>
+<section class="panel"><h2>待审核</h2><ul class="list">{review_markup}</ul></section>
+<section class="panel"><h2>健康检查</h2><ul class="list">{health_markup}</ul></section>
 <section class="panel"><h2>确认决策</h2><ul class="list">{decision_markup}</ul></section>
 <section class="panel"><h2>长期记忆</h2><ul class="list">{memory_markup}</ul></section>
 <section class="panel"><h2>最近事件</h2><ul class="list">{event_markup}</ul></section>

@@ -85,6 +85,15 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Review outcome.",
             )
             command_parser.add_argument("--feedback", help="Required change feedback.")
+        elif spec.name == "revise":
+            command_parser.add_argument("--artifact-id", required=True, help="Artifact id.")
+            command_parser.add_argument("--revision", required=True, type=int, help="Approved revision.")
+            command_parser.add_argument("--feedback", required=True, help="Required revision feedback.")
+            command_parser.add_argument(
+                "--supersede-active-work",
+                action="store_true",
+                help="Archive conflicting unfinished work after explicit user confirmation.",
+            )
         elif spec.name == "question":
             command_parser.add_argument("--work-id", required=True, help="Active work id.")
             command_parser.add_argument(

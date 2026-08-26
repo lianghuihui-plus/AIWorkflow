@@ -16,9 +16,11 @@ class WorkflowModelTests(unittest.TestCase):
             [spec.name for spec in COMMAND_SPECS],
             [
                 "init",
+                "recover",
                 "prepare",
                 "submit",
                 "review",
+                "revise",
                 "question",
                 "decide",
                 "status",

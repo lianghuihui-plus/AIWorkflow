@@ -31,7 +31,7 @@ class CommandLineTests(unittest.TestCase):
             completed = run_cli(["--version"], cwd=Path(directory))
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc1")
+        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc2")
 
     def test_migrate_rejects_a_non_legacy_directory(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:

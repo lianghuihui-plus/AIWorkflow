@@ -82,33 +82,155 @@ def artifact_identity(stage: str, active_item: str | None) -> tuple[str, str, st
 
 
 def result_schema(stage: str) -> dict[str, Any]:
-    common = {"schema_version": SCHEMA_VERSION, "stage": stage, "memory_delta": "array"}
+    string = {"type": "string", "minLength": 1}
+    string_array = {"type": "array", "items": string, "uniqueItems": True}
+    memory_delta = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["operation", "type", "content"],
+            "properties": {
+                "operation": {"enum": list(MEMORY_OPERATIONS)},
+                "type": string,
+                "content": string,
+                "target_id": {"type": ["string", "null"], "pattern": r"^M-\d{3,}$"},
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"operation": {"const": "add"}},
+                        "required": ["operation"],
+                    },
+                    "then": {"properties": {"target_id": {"type": "null"}}},
+                    "else": {
+                        "required": ["target_id"],
+                        "properties": {
+                            "target_id": {
+                                "type": "string",
+                                "pattern": r"^M-\d{3,}$",
+                            }
+                        },
+                    },
+                }
+            ],
+            "additionalProperties": False,
+        },
+    }
+    properties: dict[str, Any] = {
+        "schema_version": {"const": SCHEMA_VERSION},
+        "stage": {"const": stage},
+        "memory_delta": memory_delta,
+    }
+    required = ["schema_version", "stage", "memory_delta"]
     if stage == "analysis":
-        return {**common, "requirements": "array"}
-    if stage == "design":
-        return {**common, "tasks": "array"}
-    if stage == "specification":
-        return {**common, "task_id": "string"}
-    if stage == "implementation":
-        return {
-            **common,
-            "task_id": "string",
-            "changed_files": "array",
-            "validation_summary": "string",
+        properties["requirements"] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "summary", "sources", "disposition"],
+                "properties": {
+                    "id": {"type": ["string", "null"], "pattern": r"^REQ-\d{3,}$"},
+                    "title": string,
+                    "summary": string,
+                    "sources": string_array,
+                    "disposition": {"enum": ["proposed", "deferred"]},
+                },
+                "additionalProperties": False,
+            },
         }
-    if stage == "testing":
-        return {
-            **common,
-            "task_id": "string",
-            "test_files": "array",
-            "execution": "object",
-            "uncovered": "array",
+        required.append("requirements")
+    elif stage == "design":
+        properties["tasks"] = {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["key", "title", "requirements", "depends_on"],
+                "properties": {
+                    "key": string,
+                    "id": {"type": ["string", "null"], "pattern": r"^T-\d{3,}$"},
+                    "title": string,
+                    "requirements": string_array,
+                    "depends_on": string_array,
+                },
+                "additionalProperties": False,
+            },
         }
-    raise AIWorkflowError(
-        code="invalid_stage",
-        message=f"Stage '{stage}' has no result schema.",
-        exit_code=4,
-    )
+        required.append("tasks")
+    elif stage == "specification":
+        properties["task_id"] = {"type": "string", "pattern": r"^T-\d{3,}$"}
+        required.append("task_id")
+    elif stage == "implementation":
+        properties.update(
+            {
+                "task_id": {"type": "string", "pattern": r"^T-\d{3,}$"},
+                "changed_files": string_array,
+                "validation_summary": {"type": "string"},
+            }
+        )
+        required.extend(("task_id", "changed_files", "validation_summary"))
+    elif stage == "testing":
+        properties.update(
+            {
+                "task_id": {"type": "string", "pattern": r"^T-\d{3,}$"},
+                "test_files": string_array,
+                "execution": {
+                    "type": "object",
+                    "required": ["command", "exit_code", "summary"],
+                    "properties": {
+                        "command": {"type": ["string", "null"]},
+                        "exit_code": {"type": ["integer", "null"]},
+                        "summary": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+                "uncovered": string_array,
+            }
+        )
+        required.extend(("task_id", "test_files", "execution", "uncovered"))
+    else:
+        raise AIWorkflowError(
+            code="invalid_stage",
+            message=f"Stage '{stage}' has no result schema.",
+            exit_code=4,
+        )
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": required,
+        "properties": properties,
+        "additionalProperties": False,
+    }
+
+
+def result_template(stage: str, active_item: str | None) -> dict[str, Any]:
+    template: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "stage": stage,
+        "memory_delta": [],
+    }
+    if stage == "analysis":
+        template["requirements"] = []
+    elif stage == "design":
+        template["tasks"] = []
+    elif stage == "specification":
+        template["task_id"] = active_item
+    elif stage == "implementation":
+        template.update(
+            {"task_id": active_item, "changed_files": [], "validation_summary": ""}
+        )
+    elif stage == "testing":
+        template.update(
+            {
+                "task_id": active_item,
+                "test_files": [],
+                "execution": {"command": None, "exit_code": None, "summary": ""},
+                "uncovered": [],
+            }
+        )
+    else:
+        result_schema(stage)
+    return template
 
 
 def validate_result_manifest(stage: str, value: Any, *, active_item: str | None) -> dict[str, Any]:
@@ -211,7 +333,7 @@ def reconcile_tasks(
     requirement_ids = {
         item["id"]
         for item in requirements["items"]
-        if item["disposition"] not in {"withdrawn", "deferred"}
+        if item["disposition"] == "accepted"
     }
     known_ids = list(existing)
     used_ids: set[str] = set()
@@ -253,10 +375,10 @@ def reconcile_tasks(
         dependencies: list[str] = []
         for dependency in raw_item["depends_on"]:
             dependency_id = key_to_id.get(dependency, dependency)
-            if dependency_id not in used_ids and dependency_id not in existing:
+            if dependency_id not in used_ids:
                 raise AIWorkflowError(
                     code="unknown_task_dependency",
-                    message="Task dependency is not defined.",
+                    message="Task dependency must remain active in the current design revision.",
                     exit_code=4,
                     details={"dependency": dependency},
                 )
@@ -363,12 +485,14 @@ def _validate_requirement_results(value: Any, document: str) -> None:
         require_string(item.get("summary"), document, "summary")
         require_string_list(item.get("sources"), document, "sources")
         disposition = item.get("disposition", "proposed")
-        if disposition not in REQUIREMENT_DISPOSITIONS or disposition in {"accepted", "withdrawn"}:
+        if disposition not in {"proposed", "deferred"}:
             fail_schema(document, f"invalid submitted disposition '{disposition}'")
 
 
 def _validate_task_results(value: Any, document: str) -> None:
     items = require_list(value, document, "tasks")
+    if not items:
+        fail_schema(document, "tasks must contain at least one executable task")
     keys: set[str] = set()
     for raw_item in items:
         item = require_mapping(raw_item, document)

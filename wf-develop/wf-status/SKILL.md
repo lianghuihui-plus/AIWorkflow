@@ -37,5 +37,5 @@ python3 <aiwf.py> status --workspace <workspace>
 用户明确要求详细检查、严格检查、健康检查或 validate 时，列出全部 `issues`，包括级别、类型、
 说明和相关 ID/路径。
 
-当状态为 `needs_recovery` 时，说明存在未完成事务并建议执行 `wf` 恢复；不要由本 Skill 恢复。
+当状态为 `needs_recovery` 时，说明存在未完成事务并建议执行 `wf`；`wf` 会调用显式恢复命令。不要由本 Skill 恢复。
 当工具失败时，报告结构化错误，不通过读取或修改工作空间文件绕过错误。

@@ -411,9 +411,11 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 - `changes_requested`
 - `question_opened`
 - `decision_recorded`
+- `work_superseded`
 - `downstream_invalidated`
 - `stage_advanced`
-- `dashboard_rendered`
+
+`memory.md` 和 `dashboard.html` 是可重建视图，自动重建不写业务事件，避免展示行为污染审计日志。
 
 ### 5.9 `memory.json` 与 `memory.md`
 
@@ -604,6 +606,7 @@ flowchart LR
   "goal": "为 T-001 生成可实现规格",
   "active_item": "T-001",
   "global_memory": ".aiwf/memory.md",
+  "global_memory_sha256": "...",
   "decisions": ["D-001", "D-003"],
   "inputs": [
     "artifacts/analysis.md",
@@ -612,11 +615,10 @@ flowchart LR
   "output": "artifacts/specs/T-001.md",
   "draft_output": ".aiwf/work/W-000001/artifact.md",
   "result_output": ".aiwf/work/W-000001/result.json",
-  "result_schema": {
-    "task_id": "string",
-    "memory_delta": "array"
-  },
+  "result_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "...": "完整字段契约"},
+  "result_template": {"schema_version": 1, "stage": "specification", "task_id": "T-001", "memory_delta": []},
   "stage_guide": "references/stages/specification.md",
+  "stage_guide_base": "wf_skill",
   "constraints": [
     "不得替用户决定未确认业务选择",
     "不得修改任务范围外代码"
@@ -624,7 +626,8 @@ flowchart LR
 }
 ```
 
-任务包只提供路径、目标和边界。Agent 根据任务包读取内容，不把整个框架说明加载进上下文。
+任务包只提供路径、目标、完整结果 JSON Schema、可填写模板和边界。`prepare` 将模板写入
+`result_output`，Agent 不读取内核代码推断机器格式。Agent 根据任务包读取内容，不把整个框架说明加载进上下文。
 Agent 只写 `draft_output` 和 `result_output`，不直接覆盖正式产物或引擎数据。修订任务的草稿
 由引擎从当前 revision 预填充；`submit` 在事务中归档旧版、提升草稿、保存结果清单并更新索引。
 `work_id` 标识任务包和草稿生命周期，不承担底层事务编号职责。
@@ -649,9 +652,11 @@ Agent 提交阶段产物时，可以同时提交候选记忆增量：
 
 ```text
 aiwf.py init       初始化工作空间
+aiwf.py recover    显式恢复未完成事务和生成视图
 aiwf.py prepare    生成当前任务包
 aiwf.py submit     注册产物和候选记忆增量
 aiwf.py review     处理审核通过或修改意见
+aiwf.py revise     修订已批准的明确 revision
 aiwf.py question   登记阻塞问题
 aiwf.py decide     保存用户决策并解除阻塞
 aiwf.py status     输出结构化状态
@@ -1079,8 +1084,7 @@ stateDiagram-v2
 
 ### 阶段 8：迁移、综合验证与切换
 
-实施状态：重构实现已完成。迁移工具和 develop 正式目录切换已完成；按用户决定，最终效果
-验收由用户统一执行，在验收通过前版本保持候选发布状态。
+实施状态：重构实现与审查收口修复已完成。迁移工具和 develop 正式目录切换已完成；按用户决定，最终效果验收由用户统一执行，在验收通过前版本保持候选发布状态。
 
 目标：完成旧工作空间迁移能力和 develop 内正式入口替换。
 
@@ -1098,6 +1102,7 @@ stateDiagram-v2
 - 真实 PRD 质量评价达到预期
 - `_rewrite` 中的新实现迁入 develop 正式位置
 - 被替代旧实现已删除
+- 恢复、已批准产物修订、结果契约和生成视图读写闭环
 - release 仍无任何改动
 
 ## 16. 初始目标追踪矩阵
@@ -1207,3 +1212,16 @@ stateDiagram-v2
 - 新内核、三入口、五阶段、恢复、审核、修订、决策和网页测试全部通过。
 - develop 正式目录中不再保留被替代的旧运行时结构。
 - `wf-release` 从重构开始到完成始终没有被修改。
+
+## 21. 审查收口修复
+
+完整实现审查确认正常五阶段主干已经成立，但恢复、已批准产物修订、机器结果契约、未决需求门禁、任务撤回依赖和生成记忆投影仍存在入口或状态缺口。收口修复采用以下决定：
+
+- 增加内部 `recover`、`revise` 命令，不增加第四个 Skill。
+- `revise` 默认拒绝覆盖活动 work，只有用户明确确认后才归档并替换。
+- `prepare` 返回完整 JSON Schema 并创建结果模板，阶段指南只保留语义指导。
+- 技术设计只能引用 `accepted` 需求，活动任务不能依赖已撤回或延期任务。
+- `needs_decision` 仅兼容读取，不允许作为新结果提交或越过分析审核。
+- `memory.json` 保持事实源；`status` 只读报告投影漂移，写命令自动重建 `memory.md`。
+- `wf` 负责旧工作空间迁移预览和确认路由，`wf-status` 继续严格只读。
+- 根 README 切换到新架构，删除旧 Markdown 校验器及同步脚本。

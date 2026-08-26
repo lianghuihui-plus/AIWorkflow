@@ -86,6 +86,18 @@ def approve_indexes(
     requirement_items = [dict(item) for item in requirements["items"]]
     task_items = [dict(item) for item in tasks["items"]]
     if stage == "analysis":
+        unresolved = [
+            item["id"]
+            for item in requirement_items
+            if item["disposition"] == "needs_decision"
+        ]
+        if unresolved:
+            raise AIWorkflowError(
+                code="unresolved_requirements",
+                message="Requirement analysis contains unresolved decisions.",
+                exit_code=6,
+                details={"ids": unresolved},
+            )
         for item in requirement_items:
             if item["origin_revision"] == revision and item["disposition"] == "proposed":
                 item["disposition"] = "accepted"

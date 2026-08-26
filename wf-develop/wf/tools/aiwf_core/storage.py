@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import AIWorkflowError, SCHEMA_VERSION, now_iso, validate_document
+from .render import render_memory
 
 DATA_FILES = (
     "project.json",
@@ -190,7 +191,13 @@ class WorkspaceStore:
                 "data": {"project_id": project_data["project_id"]},
             }
             (temporary_root / "events.jsonl").write_bytes(json_line(event))
-            (temporary_root / "memory.md").write_text("# Project Memory\n", encoding="utf-8")
+            (temporary_root / "memory.md").write_text(
+                render_memory(
+                    initial_documents["memory.json"],
+                    initial_documents["decisions.json"],
+                ),
+                encoding="utf-8",
+            )
             (temporary_root / "workspace.lock").touch()
             if not reuse_existing_prd:
                 for filename, content in copied_prd.items():

@@ -319,6 +319,7 @@ class WorkflowCoreTests(unittest.TestCase):
 
             revision_request = engine.request_revision(
                 "analysis",
+                1,
                 feedback="Clarify cross-device behavior.",
             )
             revision_work = engine.prepare_work(goal="Ignored while resuming")

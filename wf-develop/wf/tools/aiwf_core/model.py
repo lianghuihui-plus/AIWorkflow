@@ -58,9 +58,11 @@ class CommandSpec:
 
 COMMAND_SPECS = (
     CommandSpec("init", "Initialize a workspace."),
+    CommandSpec("recover", "Recover an incomplete workspace transaction."),
     CommandSpec("prepare", "Prepare or resume the current work item."),
     CommandSpec("submit", "Submit a semantic artifact and result manifest."),
     CommandSpec("review", "Approve an artifact or request changes."),
+    CommandSpec("revise", "Revise an approved artifact revision."),
     CommandSpec("question", "Record blocking questions for the current work."),
     CommandSpec("decide", "Record a user decision and resume work."),
     CommandSpec("status", "Read workspace status without modifying it."),
@@ -228,6 +230,7 @@ def validate_tasks(data: dict[str, Any]) -> None:
     items = require_list(data.get("items"), document, "items")
     require_unique_ids(document, items, "task")
     task_ids = {item["id"] for item in items}
+    status_by_id = {item["id"]: item.get("status") for item in items}
     for raw_item in items:
         item = require_mapping(raw_item, document)
         require_string(item.get("title"), document, "title")
@@ -243,6 +246,11 @@ def validate_tasks(data: dict[str, Any]) -> None:
             fail_schema(document, f"invalid task status '{item.get('status')}'")
         if not isinstance(item.get("origin_revision"), int) or item["origin_revision"] < 1:
             fail_schema(document, "origin_revision must be a positive integer")
+        if item.get("status") not in {"deferred", "withdrawn"} and any(
+            status_by_id[dependency] in {"deferred", "withdrawn"}
+            for dependency in dependencies
+        ):
+            fail_schema(document, "active task cannot depend on a deferred or withdrawn task")
 
 
 def validate_artifacts(data: dict[str, Any]) -> None:

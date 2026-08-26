@@ -56,12 +56,23 @@ class AnalysisCommandLineTests(unittest.TestCase):
 
             self.assertEqual(work["stage"], "analysis")
             self.assertEqual(work["stage_guide"], "references/stages/analysis.md")
+            self.assertEqual(work["stage_guide_base"], "wf_skill")
             self.assertIn("prd/requirements.md", work["inputs"])
             self.assertIn(".aiwf/project.json", work["inputs"])
             self.assertIn(".aiwf/requirements.json", work["inputs"])
             self.assertIn("重点识别离线编辑约束", work["goal"])
             guide = SOURCE_ROOT / "wf" / work["stage_guide"]
             self.assertTrue(guide.is_file())
+            result_template = json.loads(
+                (workspace / work["result_output"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(result_template, work["result_template"])
+            requirement_schema = work["result_schema"]["properties"]["requirements"]
+            self.assertIn("title", requirement_schema["items"]["required"])
+            self.assertEqual(
+                requirement_schema["items"]["properties"]["disposition"]["enum"],
+                ["proposed", "deferred"],
+            )
             serialized = json.dumps(work, ensure_ascii=False)
             for framework_term in ("事务清单", "事件追加", "状态迁移", "dashboard"):
                 self.assertNotIn(framework_term, serialized)

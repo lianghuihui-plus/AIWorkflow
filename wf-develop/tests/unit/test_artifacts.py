@@ -9,6 +9,26 @@ from aiwf_core.model import AIWorkflowError, SCHEMA_VERSION
 
 
 class ArtifactResultTests(unittest.TestCase):
+    def test_analysis_result_rejects_needs_decision_disposition(self) -> None:
+        result = {
+            "schema_version": SCHEMA_VERSION,
+            "stage": "analysis",
+            "memory_delta": [],
+            "requirements": [
+                {
+                    "title": "Unresolved",
+                    "summary": "A business choice is unresolved.",
+                    "sources": ["prd/requirements.md"],
+                    "disposition": "needs_decision",
+                }
+            ],
+        }
+
+        with self.assertRaises(AIWorkflowError) as raised:
+            validate_result_manifest("analysis", result, active_item=None)
+
+        self.assertEqual(raised.exception.code, "invalid_schema")
+
     def test_task_dependencies_use_submission_keys_then_normalize_to_ids(self) -> None:
         result = {
             "schema_version": SCHEMA_VERSION,
@@ -95,6 +115,61 @@ class ArtifactResultTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.code, "task_dependency_cycle")
+
+    def test_design_revision_rejects_dependency_on_withdrawn_task(self) -> None:
+        current = {
+            "schema_version": SCHEMA_VERSION,
+            "items": [
+                {
+                    "id": "T-001",
+                    "title": "Base",
+                    "requirements": ["REQ-001"],
+                    "depends_on": [],
+                    "status": "planned",
+                    "origin_revision": 1,
+                },
+                {
+                    "id": "T-002",
+                    "title": "Dependent",
+                    "requirements": ["REQ-001"],
+                    "depends_on": ["T-001"],
+                    "status": "planned",
+                    "origin_revision": 1,
+                },
+            ],
+        }
+        requirements = {
+            "schema_version": SCHEMA_VERSION,
+            "items": [
+                {
+                    "id": "REQ-001",
+                    "title": "Requirement",
+                    "summary": "Summary",
+                    "disposition": "accepted",
+                    "sources": ["prd/requirements.md"],
+                    "origin_revision": 1,
+                }
+            ],
+        }
+        revision = {
+            "schema_version": SCHEMA_VERSION,
+            "stage": "design",
+            "memory_delta": [],
+            "tasks": [
+                {
+                    "key": "dependent",
+                    "id": "T-002",
+                    "title": "Dependent",
+                    "requirements": ["REQ-001"],
+                    "depends_on": ["T-001"],
+                }
+            ],
+        }
+
+        with self.assertRaises(AIWorkflowError) as raised:
+            reconcile_tasks(current, requirements, revision, revision=2)
+
+        self.assertEqual(raised.exception.code, "unknown_task_dependency")
 
 
 if __name__ == "__main__":

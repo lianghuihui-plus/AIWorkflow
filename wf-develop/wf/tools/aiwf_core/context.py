@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from .artifacts import artifact_identity, result_schema
+from .artifacts import artifact_identity, result_schema, result_template
 from .model import (
     ID_PATTERNS,
     SCHEMA_VERSION,
@@ -28,6 +29,7 @@ def build_work(
     sources: list[str],
     stage_guide: str,
     constraints: list[str],
+    global_memory_sha256: str,
     facts: dict[str, Any] | None = None,
     repository_context: dict[str, Any] | None = None,
     predecessor: str | None = None,
@@ -50,11 +52,14 @@ def build_work(
         "depends_on": depends_on,
         "sources": sources,
         "global_memory": ".aiwf/memory.md",
+        "global_memory_sha256": global_memory_sha256,
         "decisions": ".aiwf/decisions.json",
         "draft_output": f".aiwf/work/{work_id}/artifact.md",
         "result_output": f".aiwf/work/{work_id}/result.json",
         "result_schema": result_schema(stage),
+        "result_template": result_template(stage, active_item),
         "stage_guide": stage_guide,
+        "stage_guide_base": "wf_skill",
         "constraints": constraints,
         "predecessor": predecessor,
         "feedback": feedback,
@@ -89,6 +94,7 @@ def validate_work(value: Any) -> dict[str, Any]:
     require_string_list(work.get("sources"), document, "sources")
     for field_name in (
         "global_memory",
+        "global_memory_sha256",
         "decisions",
         "draft_output",
         "result_output",
@@ -96,7 +102,12 @@ def validate_work(value: Any) -> dict[str, Any]:
         "created_at",
     ):
         require_string(work.get(field_name), document, field_name, empty=field_name == "stage_guide")
+    if not re.fullmatch(r"[0-9a-f]{64}", work["global_memory_sha256"]):
+        fail_schema(document, "global_memory_sha256 must be a SHA-256 digest")
     require_mapping(work.get("result_schema"), document)
+    require_mapping(work.get("result_template"), document)
+    if work.get("stage_guide_base") != "wf_skill":
+        fail_schema(document, "stage_guide_base must be wf_skill")
     require_string_list(work.get("constraints"), document, "constraints")
     if "facts" in work:
         require_mapping(work.get("facts"), document)
@@ -124,6 +135,7 @@ def copy_successor_work(
     *,
     work_id: str,
     feedback: str | None = None,
+    global_memory_sha256: str | None = None,
 ) -> dict[str, Any]:
     return build_work(
         work_id=work_id,
@@ -135,6 +147,9 @@ def copy_successor_work(
         sources=list(previous["sources"]),
         stage_guide=previous["stage_guide"],
         constraints=list(previous["constraints"]),
+        global_memory_sha256=(
+            global_memory_sha256 or previous["global_memory_sha256"]
+        ),
         facts=dict(previous["facts"]) if "facts" in previous else None,
         repository_context=(
             dict(previous["repository_context"])

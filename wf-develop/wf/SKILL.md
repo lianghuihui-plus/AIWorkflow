@@ -1,6 +1,6 @@
 ---
 name: wf
-description: 当用户在 AIWorkFlow 工作空间中要求继续或推进流程、分析需求、审核或修改产物、处理阻塞问题与决策时使用。
+description: 当用户在 AIWorkFlow 工作空间中要求继续或推进流程、分析需求、审核或修改产物、恢复事务、迁移旧工作空间、处理阻塞问题与决策时使用。
 ---
 
 # 推进 AIWorkFlow
@@ -25,7 +25,7 @@ description: 当用户在 AIWorkFlow 工作空间中要求继续或推进流程�
 python3 <aiwf.py> status --workspace <workspace>
 ```
 
-- `needs_recovery`：停止语义工作并报告需要恢复。
+- `needs_recovery`：调用 `recover`，重新读取状态后继续原请求。
 - `review`：只处理用户对待审核 revision 的批准或修改意见。
 - `blocked`：只记录用户对开放问题的决定。
 - `working`：恢复同一个任务包。
@@ -39,7 +39,7 @@ python3 <aiwf.py> status --workspace <workspace>
 python3 <aiwf.py> prepare --workspace <workspace> [--task-id <T-id>] [--instruction <current-user-instruction>]
 ```
 
-读取返回任务包中的 `global_memory`、`decisions`、`inputs`、`stage_guide` 和必要 `sources`。遵循任务包目标与边界，自主分析需求；只写 `draft_output` 和 `result_output`，不要直接修改正式产物或 `.aiwf` 数据。
+读取返回任务包中的 `global_memory`、`decisions`、`inputs`、`stage_guide` 和必要 `sources`。`stage_guide_base=wf_skill` 表示指南路径相对于当前 `wf` Skill 目录。工具已经在 `result_output` 生成符合完整 `result_schema` 的模板；填写模板即可，不阅读内核代码推断格式。遵循任务包目标与边界，自主分析需求；只写 `draft_output` 和 `result_output`，不要直接修改正式产物或其他 `.aiwf` 数据。
 任务阶段默认由引擎选择下一个可处理任务；只有用户明确指定任务时才传 `--task-id`。
 
 完成后调用：
@@ -66,6 +66,14 @@ python3 <aiwf.py> review --workspace <workspace> --artifact-id <id> --revision <
 
 修改请求会创建带原草稿和反馈的新任务包；继续完成该任务包并再次提交。
 
+用户要求修改已批准产物时调用：
+
+```text
+python3 <aiwf.py> revise --workspace <workspace> --artifact-id <id> --revision <n> --feedback <feedback>
+```
+
+存在其他未完成 work 时不得自行覆盖。向用户说明冲突；只有用户明确确认放弃当前 work 后，才追加 `--supersede-active-work`，由引擎归档原草稿。
+
 ## 阻塞问题与决定
 
 阶段指南判定必须停止时，一次提交本轮全部阻塞问题。每项包含 `question`、`reason`、`recommendation` 和受影响阶段 `impact`：
@@ -81,3 +89,13 @@ python3 <aiwf.py> decide --workspace <workspace> --question-id <Q-id> --decision
 ```
 
 全部问题解决后，恢复引擎生成的 successor work。不要替用户补全尚未回答的选择。
+
+## 恢复与迁移
+
+状态返回 `needs_recovery` 时调用：
+
+```text
+python3 <aiwf.py> recover --workspace <workspace>
+```
+
+如果目录没有 `.aiwf/` 但存在旧版 `CONTEXT.md`，先调用 `migrate` 获取只读预览。默认不迁移；只有用户明确确认预览内容后才追加 `--apply`。迁移后从需求分析重新开始，不把旧 Markdown 解析成可信新状态。
