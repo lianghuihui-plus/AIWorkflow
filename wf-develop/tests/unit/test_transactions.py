@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,10 +8,22 @@ from pathlib import Path
 from support import bootstrap_engine
 
 from aiwf_core.model import AIWorkflowError, now_iso
-from aiwf_core.storage import InjectedTransactionFailure, json_bytes
+from aiwf_core.storage import InjectedTransactionFailure, json_bytes, sha256_bytes
 
 
 class TransactionTests(unittest.TestCase):
+    def test_status_rejects_malformed_event_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = bootstrap_engine(Path(directory))
+            events_path = engine.store.data_root / "events.jsonl"
+            with events_path.open("a", encoding="utf-8") as events:
+                events.write(json.dumps({"event_id": "bad"}) + "\n")
+
+            with self.assertRaises(AIWorkflowError) as raised:
+                engine.inspect()
+
+            self.assertEqual(raised.exception.code, "invalid_schema")
+
     def test_failure_before_event_rolls_back_all_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             engine = bootstrap_engine(Path(directory))
@@ -19,14 +32,17 @@ class TransactionTests(unittest.TestCase):
             original_requirements = store.read_json("requirements.json")
             changed_state = {**original_state, "updated_at": now_iso()}
             changed_requirements = {
-                "schema_version": 1,
+                "schema_version": 8,
                 "items": [
                     {
                         "id": "REQ-001",
                         "title": "Draft",
                         "summary": "Draft",
+                        "platform_scope": "target",
+                        "change_type": "new",
+                        "scope_reason": "Implemented by the target platform.",
                         "disposition": "proposed",
-                        "sources": ["prd/input.md"],
+                        "sources": [{"kind": "prd", "ref": "prd/input.md"}],
                         "origin_revision": 1,
                     }
                 ],
@@ -42,7 +58,7 @@ class TransactionTests(unittest.TestCase):
                         event_type="test_change",
                         event_data={},
                         command_key="test:rollback",
-                        request_digest="rollback",
+                        request_digest=sha256_bytes(b"rollback"),
                     )
 
             self.assertEqual(engine.inspect()["status"], "needs_recovery")
@@ -56,14 +72,17 @@ class TransactionTests(unittest.TestCase):
             store = engine.store
             changed_state = {**store.read_json("state.json"), "updated_at": now_iso()}
             changed_requirements = {
-                "schema_version": 1,
+                "schema_version": 8,
                 "items": [
                     {
                         "id": "REQ-001",
                         "title": "Committed",
                         "summary": "Committed",
+                        "platform_scope": "target",
+                        "change_type": "new",
+                        "scope_reason": "Implemented by the target platform.",
                         "disposition": "proposed",
-                        "sources": ["prd/input.md"],
+                        "sources": [{"kind": "prd", "ref": "prd/input.md"}],
                         "origin_revision": 1,
                     }
                 ],
@@ -79,7 +98,7 @@ class TransactionTests(unittest.TestCase):
                         event_type="test_change",
                         event_data={},
                         command_key="test:commit",
-                        request_digest="commit",
+                        request_digest=sha256_bytes(b"commit"),
                     )
 
             self.assertEqual(engine.recover()[0].split(":")[-1], "commit")
@@ -96,7 +115,7 @@ class TransactionTests(unittest.TestCase):
                     event_type="test_change",
                     event_data={},
                     command_key="test:idempotent",
-                    request_digest="first",
+                    request_digest=sha256_bytes(b"first"),
                 )
                 with self.assertRaises(AIWorkflowError) as raised:
                     store.commit_locked(
@@ -104,7 +123,7 @@ class TransactionTests(unittest.TestCase):
                         event_type="test_change",
                         event_data={},
                         command_key="test:idempotent",
-                        request_digest="second",
+                        request_digest=sha256_bytes(b"second"),
                     )
 
             self.assertEqual(raised.exception.code, "idempotency_conflict")

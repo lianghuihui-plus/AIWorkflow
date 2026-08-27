@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .artifacts import artifact_identity, result_schema, result_template
+from .artifacts import artifact_identity, result_schema, result_seed
 from .model import (
     ID_PATTERNS,
     SCHEMA_VERSION,
@@ -30,6 +30,7 @@ def build_work(
     stage_guide: str,
     constraints: list[str],
     global_memory_sha256: str,
+    target_platform: str,
     facts: dict[str, Any] | None = None,
     repository_context: dict[str, Any] | None = None,
     predecessor: str | None = None,
@@ -43,6 +44,7 @@ def build_work(
         "stage": stage,
         "active_item": active_item,
         "goal": goal,
+        "target_platform": target_platform,
         "artifact": {
             "id": artifact_id,
             "type": artifact_type,
@@ -53,20 +55,18 @@ def build_work(
         "sources": sources,
         "global_memory": ".aiwf/memory.md",
         "global_memory_sha256": global_memory_sha256,
-        "decisions": ".aiwf/decisions.json",
         "draft_output": f".aiwf/work/{work_id}/artifact.md",
         "result_output": f".aiwf/work/{work_id}/result.json",
-        "result_schema": result_schema(stage),
-        "result_template": result_template(stage, active_item),
+        "result_schema": result_schema(stage, active_item),
+        "result_seed": result_seed(stage, active_item),
         "stage_guide": stage_guide,
         "stage_guide_base": "wf_skill",
         "constraints": constraints,
+        "facts": dict(facts or {}),
         "predecessor": predecessor,
         "feedback": feedback,
         "created_at": now_iso(),
     }
-    if facts is not None:
-        work["facts"] = facts
     if repository_context is not None:
         work["repository_context"] = repository_context
     validate_work(work)
@@ -86,6 +86,7 @@ def validate_work(value: Any) -> dict[str, Any]:
     require_string(work.get("stage"), document, "stage")
     require_optional_string(work.get("active_item"), document, "active_item")
     require_string(work.get("goal"), document, "goal")
+    require_string(work.get("target_platform"), document, "target_platform")
     artifact = require_mapping(work.get("artifact"), document)
     for field_name in ("id", "type", "output"):
         require_string(artifact.get(field_name), document, f"artifact.{field_name}")
@@ -95,7 +96,6 @@ def validate_work(value: Any) -> dict[str, Any]:
     for field_name in (
         "global_memory",
         "global_memory_sha256",
-        "decisions",
         "draft_output",
         "result_output",
         "stage_guide",
@@ -105,18 +105,26 @@ def validate_work(value: Any) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{64}", work["global_memory_sha256"]):
         fail_schema(document, "global_memory_sha256 must be a SHA-256 digest")
     require_mapping(work.get("result_schema"), document)
-    require_mapping(work.get("result_template"), document)
+    require_mapping(work.get("result_seed"), document)
     if work.get("stage_guide_base") != "wf_skill":
         fail_schema(document, "stage_guide_base must be wf_skill")
     require_string_list(work.get("constraints"), document, "constraints")
-    if "facts" in work:
-        require_mapping(work.get("facts"), document)
+    require_mapping(work.get("facts"), document)
     if "repository_context" in work:
         repository = require_mapping(work.get("repository_context"), document)
         if repository.get("type") not in {"git", "directory"}:
             fail_schema(document, "repository_context.type must be git or directory")
         require_string(repository.get("path"), document, "repository_context.path")
         require_string(repository.get("root"), document, "repository_context.root")
+        git_root = repository.get("git_root")
+        if git_root is not None and not isinstance(git_root, str):
+            fail_schema(document, "repository_context.git_root must be a string or null")
+        require_string(
+            repository.get("scope_prefix"),
+            document,
+            "repository_context.scope_prefix",
+            empty=True,
+        )
         head = repository.get("head")
         if head is not None and not isinstance(head, str):
             fail_schema(document, "repository_context.head must be a string or null")
@@ -125,6 +133,29 @@ def validate_work(value: Any) -> dict[str, Any]:
             document,
             "repository_context.status_lines",
         )
+        if repository.get("verification_level") not in {"git_delta", "limited"}:
+            fail_schema(
+                document,
+                "repository_context.verification_level must be git_delta or limited",
+            )
+        fingerprints = require_mapping(
+            repository.get("status_fingerprints"),
+            document,
+        )
+        for relative_path, raw_fingerprint in fingerprints.items():
+            if not isinstance(relative_path, str) or not relative_path:
+                fail_schema(document, "repository fingerprint paths must be non-empty strings")
+            fingerprint = require_mapping(raw_fingerprint, document)
+            require_string(
+                fingerprint.get("status"),
+                document,
+                "repository_context.status_fingerprints.status",
+            )
+            digest = fingerprint.get("sha256")
+            if digest is not None and (
+                not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            ):
+                fail_schema(document, "repository fingerprint sha256 must be a digest or null")
     require_optional_string(work.get("predecessor"), document, "predecessor")
     require_optional_string(work.get("feedback"), document, "feedback")
     return work
@@ -150,7 +181,8 @@ def copy_successor_work(
         global_memory_sha256=(
             global_memory_sha256 or previous["global_memory_sha256"]
         ),
-        facts=dict(previous["facts"]) if "facts" in previous else None,
+        target_platform=previous["target_platform"],
+        facts=dict(previous["facts"]),
         repository_context=(
             dict(previous["repository_context"])
             if "repository_context" in previous

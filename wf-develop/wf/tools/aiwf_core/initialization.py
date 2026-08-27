@@ -22,7 +22,7 @@ def prepare_initialization(
     name: str,
     platform: str,
     prd_paths: Sequence[str],
-    code_repository: str | None,
+    code_repository: str,
     project_id: str | None = None,
 ) -> InitializationInput:
     project_name = name.strip()
@@ -82,7 +82,7 @@ def prepare_initialization(
         "project_id": resolved_project_id,
         "name": project_name,
         "platform": project_platform,
-        "code_repository": str(repository) if repository is not None else None,
+        "code_repository": str(repository),
         "prd_files": [f"prd/{name}" for name in sorted(copied_files, key=str.casefold)],
     }
     return InitializationInput(project=project, prd_files=copied_files)
@@ -140,9 +140,13 @@ def discover_prd_files(raw_paths: Sequence[str]) -> list[Path]:
     return list(discovered)
 
 
-def _resolve_repository(raw_path: str | None) -> Path | None:
-    if raw_path is None or not raw_path.strip():
-        return None
+def _resolve_repository(raw_path: str) -> Path:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise AIWorkflowError(
+            code="code_repository_required",
+            message="A code repository directory is required.",
+            exit_code=2,
+        )
     candidate = Path(raw_path).expanduser()
     try:
         resolved = candidate.resolve(strict=True)

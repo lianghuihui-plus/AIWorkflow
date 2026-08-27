@@ -35,9 +35,9 @@
 - 保留以下五个核心阶段及其顺序：
   1. 需求分析
   2. 技术设计
-  3. 规格生成
+  3. 任务规格
   4. 代码实现
-  5. 测试生成
+  5. 单元测试
 - 保留阶段产物提交后等待用户审核的推进方式。
 - 保留用户提出问题、做出决策和要求修改的能力。
 - 保留动态数据与静态网页结合的检视方式。
@@ -45,11 +45,10 @@
 
 ### 2.3 非目标
 
-- 不保持旧工作空间内部文件格式逐字段兼容。
+- 不兼容、不识别或迁移旧工作空间；旧项目需要在新的空目录中重新初始化。
 - 不保留旧校验器的每一条正则规则。
 - 不在新内核中复刻当前 `CONTEXT.md`、`ISSUES.md`、`REVISIONS.md`、`JOURNAL.md` 和 `CHANGELOG.md` 的组织方式。
 - 不增加新的业务阶段。
-- 不把旧版本迁移逻辑混入核心阶段逻辑。
 - 不在重构期间修改或试运行 `wf-release`。
 
 ## 3. 设计原则
@@ -63,7 +62,7 @@
 以下工作全部由 Python 工具完成：
 
 - 工作空间初始化
-- 状态读取和迁移
+- 状态读取
 - ID 分配
 - 产物注册和版本递增
 - 审核状态更新
@@ -143,9 +142,14 @@ wf-develop/
 │           ├── storage.py
 │           ├── workflow.py
 │           ├── context.py
+│           ├── stage_context.py
 │           ├── artifacts.py
+│           ├── decisions.py
+│           ├── sources.py
+│           ├── repository.py
 │           ├── review.py
-│           └── render.py
+│           ├── dashboard.py
+│           └── memory_view.py
 ├── wf-init/
 │   └── SKILL.md
 ├── wf-status/
@@ -153,16 +157,16 @@ wf-develop/
 └── tests/
     ├── unit/
     ├── integration/
-    ├── scenarios/
     └── evaluations/
 ```
 
 `wf` 是共享内核的所有者。`wf-init` 和 `wf-status` 是薄入口，并把调用委托给同一套内核，不再复制校验器。
+`workflow.py` 负责编排用例，`stage_context.py` 负责五阶段任务上下文，事实校验按
+artifact、decision、source 和 repository 分模块；`dashboard.py` 与 `memory_view.py`
+分别生成看板和当前记忆投影。
 
-开发阶段不直接覆盖上述正式路径。阶段 1 至阶段 7 的新实现统一放在
-`wf-develop/_rewrite/src/`，对应测试放在 `wf-develop/_rewrite/tests/`。只有阶段 8
-综合验收通过后，才将新实现迁入 `wf-develop/wf`、`wf-develop/wf-init`、
-`wf-develop/wf-status` 和 `wf-develop/tests`，再删除 develop 中被替代的旧实现。
+当前实现直接维护上述 develop 正式路径。重构过程中的临时实现目录已经删除，不属于现行架构、
+验证边界或发布流程。
 
 三个入口作为同一发行单元安装。`wf-init` 和 `wf-status` 通过自身真实路径定位同级
 `wf/tools/aiwf.py`；不得依赖当前工作目录、线上软链接路径或写死本机绝对路径。找不到
@@ -203,11 +207,12 @@ workspace/
 
 ### 5.1 `project.json`
 
-保存初始化后相对稳定的项目配置：
+保存初始化后相对稳定的项目配置。`code_repository` 是必填的已解析绝对目录，初始化在写入任何
+工作空间文件前验证其存在且为目录；不提供后补或修改仓库配置的命令：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "project_id": "demo-project",
   "name": "Demo Project",
   "platform": "HarmonyOS",
@@ -223,7 +228,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "current_stage": "analysis",
   "mode": "ready",
   "active_item": null,
@@ -250,6 +255,7 @@ workspace/
 - `working`：存在正在执行的任务
 - `review`：等待用户审核
 - `blocked`：等待用户决策或必要输入
+- `decision`：问题已经全部回答，等待显式选择继续当前 work 或修订上游产物
 
 复杂状态由 `current_stage + mode + active_item + active_work` 表达，不再创建大量组合状态名称。
 `active_work_sha256` 保护引擎生成的任务包元数据；Agent 只允许修改任务包指定的草稿和结果文件。
@@ -260,14 +266,20 @@ workspace/
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "items": [
     {
       "id": "REQ-001",
       "title": "支持验证码登录",
       "summary": "用户可以通过手机号和验证码完成登录",
+      "platform_scope": "target",
+      "change_type": "new",
+      "scope_reason": "验证码登录由目标移动端实现",
       "disposition": "proposed",
-      "sources": ["prd/requirements.md#验证码登录"]
+      "sources": [
+        {"kind": "prd", "ref": "prd/requirements.md#验证码登录"}
+      ],
+      "origin_revision": 1
     }
   ]
 }
@@ -278,7 +290,7 @@ workspace/
 - `proposed`：Agent 从 PRD 识别出的候选需求
 - `accepted`：用户审核后纳入范围
 - `deferred`：用户明确暂不纳入
-- `needs_decision`：等待用户决策
+- `excluded`：确认不属于目标端实施范围
 - `withdrawn`：后续修订明确移除，但保留 ID 和审计记录
 
 需求的完整行为、约束、证据和冲突保留在 `analysis.md`。结构化索引只承载跨阶段定位所需的最小字段。
@@ -290,18 +302,19 @@ workspace/
 
 ### 5.4 `tasks.json`
 
-保存技术设计产生的任务索引和依赖关系：
+保存任务规格阶段的 `task-plan` 产生的任务索引和依赖关系：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "items": [
     {
       "id": "T-001",
       "title": "实现验证码登录状态管理",
       "requirements": ["REQ-001"],
       "depends_on": [],
-      "status": "proposed"
+      "status": "proposed",
+      "origin_revision": 1
     }
   ]
 }
@@ -309,18 +322,18 @@ workspace/
 
 任务状态取值：
 
-- `proposed`：设计产物提出但尚未审核
-- `planned`：设计已审核，可以进入规格阶段
+- `proposed`：任务规划产物提出但尚未审核
+- `planned`：`task-plan` 已审核，可以生成逐任务规格
 - `in_progress`：规格已审核，正在实现或测试
 - `implemented`：实现报告已审核
 - `tested`：测试报告已审核
-- `deferred`：用户明确延期
 - `stale`：上游变更，需要重新评估
-- `withdrawn`：后续设计修订明确移除，但保留 ID 和审计记录
+- `withdrawn`：后续任务规划修订明确移除，但保留 ID 和审计记录
 
-任务 ID、依赖和完成状态由引擎管理。设计修订沿用与需求索引相同的显式 ID 规则；从最新
-revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术目标和方案仍保存在
-`design.md` 以及对应规格中。
+任务 ID、依赖和完成状态由引擎管理。任务规划修订沿用与需求索引相同的显式 ID 规则；从最新
+`task-plan` revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术目标和方案仍保存在
+`design.md` 以及对应规格中。每个活动任务至少引用一个 `accepted` 需求，并且所有
+`accepted` 需求必须被至少一个活动任务覆盖；`deferred` 需求不进入任务设计。
 
 ### 5.5 `artifacts.json`
 
@@ -328,12 +341,15 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "items": [
     {
       "id": "T-001-spec",
       "type": "specification",
+      "stage": "specification",
+      "active_item": "T-001",
       "path": "artifacts/specs/T-001.md",
+      "snapshot_path": ".aiwf/history/T-001-spec/2.md",
       "result_path": ".aiwf/results/T-001-spec/2.json",
       "work_path": ".aiwf/history/T-001-spec/2.work.json",
       "content_sha256": "...",
@@ -342,8 +358,8 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
       "status": "review",
       "revision": 2,
       "approved_revision": 1,
-      "depends_on": ["analysis@1", "design@2"],
-      "sources": ["REQ-001", "REQ-003"],
+      "depends_on": ["task-plan@2"],
+      "sources": ["artifacts/design.md", "artifacts/task-plan.md"],
       "updated_at": "2026-08-25T10:30:00+08:00"
     }
   ]
@@ -359,13 +375,11 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 
 未提交内容只存在于 `work/`，不进入产物注册表，因此不需要 `draft` 产物状态。
 
-`approved_revision` 记录最近一次被用户审核通过的版本；当前 `revision` 更新后不会继承
+`snapshot_path` 指向当前 revision 提交时保存的不可变 Markdown 快照；正式 `path` 是当前展示投影。`approved_revision` 记录最近一次被用户审核通过的版本；当前 `revision` 更新后不会继承
 旧版本的审核结论。审核意见、审核时间和操作者作为事件关联到明确 revision，注册表只保留
 当前查询所需的摘要。
 
-正式产物、结果清单和 revision 对应 work 快照的摘要必须与注册表哈希一致。发现工作流外修改时，`status` 只报告
-`artifact_drift`；审核和阶段推进必须拒绝继续。只有在用户明确要求采纳该修改后，`wf` 才能
-把它作为新 work 的草稿重新提交为新 revision，不得沿用旧审核状态。
+正式产物、Markdown 快照、结果清单和 revision 对应 work 快照的摘要必须与注册表哈希一致。发现工作流外修改时，`status` 只报告 `artifact_drift`；审核和阶段推进必须拒绝继续。用户明确选择后，`resolve-drift` 可以把孤立的正式 Markdown 修改作为新 work 草稿，或用已批准快照恢复正式产物。结果清单、work 或快照漂移不得通过 Markdown 反推或采纳。
 
 ### 5.6 `decisions.json`
 
@@ -373,13 +387,16 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 8,
   "items": [
     {
       "id": "D-001",
       "question_id": "Q-001",
       "decision": "用户原始决策文本",
       "impact": ["analysis", "design"],
+      "status": "active",
+      "supersedes": [],
+      "superseded_by": null,
       "created_at": "2026-08-25T11:00:00+08:00"
     }
   ]
@@ -414,13 +431,15 @@ revision 移除的任务标记为 `withdrawn`，不复用其 ID。完整技术�
 - `work_superseded`
 - `downstream_invalidated`
 - `stage_advanced`
+- `artifact_drift_resolved`
+- `upstream_correction_routed`
 
 `memory.md` 和 `dashboard.html` 是可重建视图，自动重建不写业务事件，避免展示行为污染审计日志。
 
 ### 5.9 `memory.json` 与 `memory.md`
 
-`memory.json` 是长期记忆的结构化事实源，每条记录包含稳定 ID、类型、正文、来源 artifact
-revision、状态和更新时间。`memory.md` 是引擎从 `memory.json` 与 `decisions.json` 生成的只读
+`memory.json` 是长期记忆的结构化事实源，每条记录包含稳定 ID、受控类型、正文、证据、理由、
+验证点、来源 artifact revision、状态和更新时间。`memory.md` 是引擎从 `memory.json` 与 `decisions.json` 生成的只读
 可读投影，供 Agent 在新会话中快速恢复：
 
 - 项目目标
@@ -432,7 +451,8 @@ revision、状态和更新时间。`memory.md` 是引擎从 `memory.json` 与 `d
 - 当前主要风险
 - 重要产物索引
 
-只有用户决策或已审核产物中的事实才能进入长期记忆。推断、草稿和未确认结论不得写成事实。
+只有用户决策或已审核产物中的跨阶段信息才能进入长期记忆。仓库事实、架构决策、工程默认值和
+验证项分别保留其证据、理由或验证方式；推断、草稿和未确认结论不得写成已确认事实。
 Agent 不直接编辑这两个文件，而是在结果清单中提交 `add`、`update` 或 `retract` 候选操作；
 已有条目的修改必须引用稳定 memory ID，引擎只在审核通过时应用并重新生成 `memory.md`。
 
@@ -454,7 +474,7 @@ Agent 不直接编辑这两个文件，而是在结果清单中提交 `add`、`u
 
 | 层级 | 内容 | 维护方 |
 |---|---|---|
-| 语义产物 | 需求、设计、规格、实现报告、测试报告 | Agent |
+| 语义产物 | 需求、设计、任务规划、逐任务规格、实现报告、单元测试报告 | Agent |
 | 流程元数据 | 状态、版本、依赖、审核、事件、决策 | 工作流引擎 |
 | 展示产物 | `dashboard.html` | 渲染器 |
 
@@ -473,11 +493,12 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 
 | 阶段 | 结构化结果 |
 |---|---|
-| 需求分析 | 候选需求标题、摘要、来源、处理建议、候选记忆增量 |
-| 技术设计 | 任务标题、关联需求、任务依赖、候选记忆增量 |
-| 规格生成 | 任务 ID、产物路径、依赖 revision、候选记忆增量 |
+| 需求分析 | 目标平台、候选功能点、平台范围、变更类型、范围理由、处理建议、来源、候选记忆增量 |
+| 技术设计 | 方案覆盖的已确认需求 ID、候选记忆增量 |
+| 任务规划 | 任务标题、关联需求、任务硬依赖、候选记忆增量 |
+| 逐任务规格 | 任务 ID、候选记忆增量 |
 | 代码实现 | 任务 ID、变更文件、验证摘要、候选记忆增量 |
-| 测试生成 | 任务 ID、测试文件、执行结果、未覆盖项、候选记忆增量 |
+| 单元测试 | 任务 ID、单元测试文件、执行结果、未覆盖项、候选记忆增量 |
 
 需求 ID、任务 ID、revision、时间和状态由引擎分配或规范化，Agent 不负责维护全局编号。
 已有索引项的 ID 由 `prepare` 提供，Agent 只需显式回传关联；引擎不得通过标题相似度自行合并。
@@ -492,7 +513,8 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 最低语义要求：
 
 - 需求目标和业务背景
-- 范围与非范围
+- 目标平台以及本端范围与非范围
+- 新增、修改、复用和无需实施的已有能力判断
 - 原始依据和可追溯引用
 - 关键用户或系统行为
 - 已确认约束
@@ -510,13 +532,20 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 - 方案目标和上下文
 - 现状理解
 - 核心设计和关键数据流
+- 模块、文件、类、组件、接口和数据结构的职责边界
 - 重要技术决策及权衡
-- 任务拆分和依赖
 - 影响范围、风险和验证思路
+
+技术设计只负责架构与代码组织，不创建执行任务，不展开逐行正式代码；必要时可以使用伪代码。
 
 图表按复杂度和表达价值决定，不要求机械生成固定类型的 Mermaid 图。
 
-### 6.5 规格产物
+### 6.5 任务规划与规格产物
+
+任务规划路径：`artifacts/task-plan.md`
+
+任务规划根据已批准技术设计拆分可独立编码的任务、目标、范围和硬依赖。提交 `task-plan`
+后，任务先以 `proposed` 写入索引；只有该产物审核通过后才转为 `planned`，随后进入逐任务规格。
 
 路径：`artifacts/specs/T-XXX.md`
 
@@ -530,7 +559,7 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 - 预计修改范围
 - 不得提前规定测试代码实现
 
-规格应足以指导实现，但不要求 Agent 为满足模板重复设计内容。
+规格应说明做什么、大致怎么做和达到什么目标，足以指导实现，但不要求 Agent 为满足模板重复设计内容。任务规划和逐任务规格都不得设计测试文件、用例、Mock 或断言。
 
 ### 6.6 实现报告
 
@@ -549,6 +578,8 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 引擎不直接修改代码仓库。进入实现阶段时，`prepare` 记录仓库路径、可用的版本控制基线和
 已存在的未提交文件；阶段参考要求 Agent 保护既有改动、只处理 active item、不得自行提交或
 清理仓库。结果清单显式报告本次触碰的文件，不能把任务开始前已存在的差异冒充本次改动。
+当前任务依赖其他任务时，任务包同时提供前置任务已批准实现报告的输入路径和精确 revision
+依赖，不加载无关任务产物。
 
 ### 6.7 测试报告
 
@@ -562,16 +593,16 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 - 未覆盖行为及原因
 - 仍需关注的风险
 
-测试代码设计来自真实实现和项目现有测试模式，不从规格中的模板化测试指令继承。
+单元测试代码设计来自真实实现和项目现有测试模式，不从规格中的模板化测试指令继承。
 
-测试生成遵守与实现阶段相同的仓库边界。测试命令由 Agent 根据项目事实选择，结果清单记录
+单元测试遵守与实现阶段相同的仓库边界。测试命令由 Agent 根据项目事实选择，结果清单记录
 实际执行命令的摘要、退出状态和未执行原因；引擎不以“存在测试报告”替代真实测试结果。
 
 ### 6.8 版本和历史
 
 - 每次提交产物时由引擎递增 `revision`。
 - 当前版本保留在 `artifacts/`。
-- 被替换的版本归档到 `.aiwf/history/<artifact-id>/<revision>.md`。
+- 每次提交都把 revision Markdown 快照保存到 `.aiwf/history/<artifact-id>/<revision>.md`。
 - 审核和修改意见通过事件关联到明确 revision。
 - 用户审核的是指定 revision，不能把旧审核结果自动套用到新版本。
 
@@ -580,9 +611,10 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 ```mermaid
 flowchart LR
   A["需求分析"] --> D["技术设计"]
-  D --> S["任务规格"]
+  D --> P["任务规划"]
+  P --> S["逐任务规格"]
   S --> I["实现报告"]
-  I --> T["测试报告"]
+  I --> T["单元测试报告"]
 ```
 
 上游已审核产物发生实质更新时，引擎根据 `depends_on` 将相关下游产物标记为 `stale`。失效只修改注册表状态，不要求 Agent 改写下游 Markdown 的审核字段。
@@ -592,7 +624,7 @@ flowchart LR
 ### 7.1 三层记忆
 
 1. 对话记忆：当前会话中可利用，但不作为事实源。
-2. 项目长期记忆：`memory.json`、其可读投影 `memory.md` 和 `decisions.json`。
+2. 项目长期记忆：`memory.json` 与当前有效决策生成的可读投影 `memory.md`；完整 `decisions.json` 只用于状态、看板和审计。
 3. 当前任务上下文：引擎按阶段和任务动态生成。
 
 ### 7.2 任务包结构
@@ -605,18 +637,20 @@ flowchart LR
   "stage": "specification",
   "goal": "为 T-001 生成可实现规格",
   "active_item": "T-001",
+  "target_platform": "HarmonyOS",
+  "facts": {"requirements": [], "work_kind": "task_specification"},
   "global_memory": ".aiwf/memory.md",
   "global_memory_sha256": "...",
-  "decisions": ["D-001", "D-003"],
   "inputs": [
     "artifacts/analysis.md",
-    "artifacts/design.md"
+    "artifacts/design.md",
+    "artifacts/task-plan.md"
   ],
-  "output": "artifacts/specs/T-001.md",
+  "artifact": {"id": "T-001-spec", "type": "specification", "output": "artifacts/specs/T-001.md"},
   "draft_output": ".aiwf/work/W-000001/artifact.md",
   "result_output": ".aiwf/work/W-000001/result.json",
   "result_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "...": "完整字段契约"},
-  "result_template": {"schema_version": 1, "stage": "specification", "task_id": "T-001", "memory_delta": []},
+  "result_seed": {"schema_version": 8, "stage": "specification", "task_id": "T-001", "memory_delta": [], "superseded_decisions": []},
   "stage_guide": "references/stages/specification.md",
   "stage_guide_base": "wf_skill",
   "constraints": [
@@ -626,25 +660,27 @@ flowchart LR
 }
 ```
 
-任务包只提供路径、目标、完整结果 JSON Schema、可填写模板和边界。`prepare` 将模板写入
-`result_output`，Agent 不读取内核代码推断机器格式。Agent 根据任务包读取内容，不把整个框架说明加载进上下文。
+任务包只提供路径、目标、完整结果 JSON Schema、可填写 seed 和边界。`prepare` 将
+`result_seed` 写入 `result_output`；seed 只是待填写起点，可以尚未满足最终 Schema，
+`submit` 时必须符合 `result_schema`。Agent 不读取内核代码推断机器格式，并根据任务包读取内容，不把整个框架说明加载进上下文。
 Agent 只写 `draft_output` 和 `result_output`，不直接覆盖正式产物或引擎数据。修订任务的草稿
-由引擎从当前 revision 预填充；`submit` 在事务中归档旧版、提升草稿、保存结果清单并更新索引。
+由引擎从当前 revision 预填充；`submit` 在事务中保存新 revision 快照、提升草稿、保存结果清单并更新索引。
 `work_id` 标识任务包和草稿生命周期，不承担底层事务编号职责。
 
 ### 7.3 记忆增量
 
-Agent 提交阶段产物时，可以同时提交候选记忆增量：
+Agent 提交阶段产物时，可以同时提交 `repository_fact`、`architecture_decision`、
+`engineering_default` 或 `validation_item` 候选记忆增量。仓库事实必须带文件和符号证据，
+架构决策必须带理由，工程默认值必须带理由和验证点，验证项必须说明验证方式。
 
-- 新确认事实
-- 新术语或术语修正
-- 新全局约束
-- 被推翻的旧假设
-- 新设计决策
-
-每项增量都必须带操作类型、内容、来源和可选目标 memory ID。引擎只在对应产物审核通过
+每项增量都必须带操作类型、受控类型、内容和可选目标 memory ID，来源 artifact revision 由引擎附加。引擎只在对应产物审核通过
 或用户明确确认后应用；无法定位目标、来源 revision 不匹配或相互冲突时拒绝事务，不做
 语义猜测。
+
+未批准产物被要求修改时，原候选记忆增量继续保留；已批准产物创建新 revision 时，历史增量
+已经生效，不得重放，新 seed 的 `memory_delta` 为空。任务包通过 `facts.affected_memory` 提供
+该产物历史 revision 产生的活动记忆，由 Agent 判断是否需要显式 `update` 或 `retract`。如果
+产物正文、Agent 结果字段、记忆增量和精确 revision 依赖均未改变，`submit` 拒绝创建空 revision。
 
 ## 8. 工作流引擎
 
@@ -657,11 +693,12 @@ aiwf.py prepare    生成当前任务包
 aiwf.py submit     注册产物和候选记忆增量
 aiwf.py review     处理审核通过或修改意见
 aiwf.py revise     修订已批准的明确 revision
+aiwf.py resolve-drift 采纳或放弃工作流外的正式 Markdown 修改
 aiwf.py question   登记阻塞问题
-aiwf.py decide     保存用户决策并解除阻塞
+aiwf.py decide     原样保存用户决策
+aiwf.py route-decision 根据决定继续当前 work 或修订上游产物
 aiwf.py status     输出结构化状态
 aiwf.py render     生成 dashboard.html
-aiwf.py migrate    执行旧工作空间一次性迁移
 ```
 
 这些是 Skill 内部调用接口，不要求用户直接记忆或执行。
@@ -669,12 +706,14 @@ aiwf.py migrate    执行旧工作空间一次性迁移
 `submit` 同时接收任务包中的 Markdown 草稿和阶段结果清单。引擎只从结果清单更新需求、任务、
 依赖和状态索引，不通过解析 Markdown 标题或表格恢复机器状态。引擎按命令自然键保证重试
 幂等：`prepare` 使用 active work，`submit/question` 使用 work ID，`review` 使用 artifact ID、
-revision 和结果，`decide` 使用 question ID。相同请求重试必须返回同一结果，不能重复分配 ID、
+revision 和结果，`decide` 使用 question ID，`route-decision` 使用 decision work ID。相同请求重试必须返回同一结果，不能重复分配 ID、
 递增 revision 或追加事件；同一自然键出现冲突内容时必须拒绝。
 
 一个 work 只允许一个终结动作：成功 `submit`，或一次性登记本轮全部阻塞问题后进入
-`blocked`。问题解决后引擎创建 successor work，复制未提交草稿并补入新决策；这样后续再次
-遇到阻塞时有新的 work ID，不需要复用已经终结的自然键。
+`blocked`。全部问题解决后进入 `decision`，但不自动恢复原任务。`route-decision resume`
+创建 successor work 并复制未提交草稿；`route-decision revise` 只允许选择问题影响范围内、
+且属于当前 work 传递上游依赖的已批准 revision，并在同一事务中归档当前 work、创建上游
+revision work。引擎不从用户自然语言猜测路由。
 
 ### 8.2 事务模型
 
@@ -688,8 +727,8 @@ revision 和结果，`decide` 使用 question ID。相同请求重试必须返�
 6. 校验提交结果后清理事务目录。
 7. 释放锁，再 best-effort 重新渲染网页。
 
-正式语义产物也属于该事务：提交时先把旧 current revision 写入 `history/`，再把 `work/` 中
-草稿提升到正式路径并登记内容哈希。Agent 在 `work/` 中的未提交草稿不作为流程事实；它会在
+正式语义产物也属于该事务：提交时把新 revision 的 Markdown 快照和 work 快照写入 `history/`，
+再把 `work/` 中草稿提升到正式路径并登记内容哈希。Agent 在 `work/` 中的未提交草稿不作为流程事实；它会在
 幂等恢复期间保留，work 完成或明确放弃后才清理。
 
 每个写命令开始时先恢复未完成事务：`prepared` 事务依据事件中的 transaction ID 和命令自然键完成提交或用
@@ -712,16 +751,28 @@ stateDiagram-v2
   working --> blocked: question
   review --> ready: approve_and_advance
   review --> working: changes_requested
-  blocked --> working: decision_recorded
+  blocked --> decision: all_decisions_recorded
+  decision --> working: route_resume
+  decision --> working: route_upstream_revision
 ```
 
 `prepare` 在 `working` 模式下幂等返回 active work 的同一任务包，用于会话中断后恢复。
 `changes_requested` 会保留 active item、创建新 work 并用当前 revision 预填草稿，使当前调用
-可以继续修改；`decision_recorded` 创建 successor work，复制问题发生时的草稿并更新任务包
-输入。若调用中断，下次 `prepare` 恢复当前 active work。
+可以继续修改；`decision_recorded` 只更新决定、记忆投影和模式，`decision_route_selected`
+负责创建 successor work 或上游 revision work。若调用中断，状态仍明确停留在 `decision` 或
+新的 `working`，不会在用户未选择路由时擅自继续原任务。
 
-分析和设计阶段的唯一产物审核通过后推进到下一阶段。规格、实现和测试阶段按任务逐个执行；
-单项审核通过后，如果仍有可执行项则保持当前阶段并回到 `ready`，只有本阶段所有非 deferred
+### 8.4 健康门禁
+
+`status` 为每个 issue 返回 `blocking` 与 `recovery_action`，并给出顶层 `can_advance`。
+存在阻塞错误时 `next_action=resolve_health_issues`，CLI 拒绝正常 `prepare`、`submit`、批准审核
+以及 decision resume，但继续允许 `status`、`recover`、`resolve-drift`、记录用户决定和创建
+上游 revision。生成视图漂移走确定性恢复，产物漂移走显式采纳或放弃，索引覆盖错误走对应
+上游 revision，仓库不可访问时要求恢复初始化时保存的绝对路径。
+
+分析和设计阶段的唯一产物审核通过后推进到下一阶段。规格阶段先生成并审核唯一的
+`task-plan`，再按其中的活动任务逐个生成规格；实现和测试阶段同样按任务逐个执行。
+单项审核通过后，如果仍有可执行项则保持当前阶段并回到 `ready`，只有本阶段所有非 withdrawn
 任务的对应产物都 `approved` 才推进。默认一次只允许一个 active item，避免并发 Agent 修改同一
 工作空间；未来若需要并行处理，必须单独设计租约和合并协议。
 
@@ -737,7 +788,7 @@ stateDiagram-v2
 - 调用 `aiwf.py init`
 - 输出初始化结果和下一步
 
-不在 `SKILL.md` 中嵌入完整模板和平台编码规范。项目编码规范从代码仓库事实和可选初始化配置中读取。
+不在 `SKILL.md` 中嵌入完整模板和平台编码规范。项目编码规范从初始化时必填的代码仓库事实中读取。
 
 ### 9.2 `wf`
 
@@ -841,22 +892,14 @@ stateDiagram-v2
 - 只有 Agent 无法基于现有事实安全推进时才创建问题。
 - 问题必须关联当前阶段、任务和受影响产物。
 - 用户决策原文写入 `decisions.json`。
-- 解除阻塞后重新生成任务包，不直接猜测受影响产物如何修改。
+- 全部问题回答后显式选择 `route-decision resume/revise`；恢复当前 work 或创建真正受影响的上游 revision work。
 
-## 13. 旧工作空间迁移
+## 13. 旧工作空间边界
 
-旧格式兼容通过一次性 `migrate` 命令处理，不在新工作流核心路径中保留双写或双解析。
-
-迁移步骤：
-
-1. 只读扫描旧工作空间。
-2. 生成迁移预览和无法映射项。
-3. 用户确认后创建 `.aiwf/` 和新 `artifacts/` 结构。
-4. 保留旧文件到只读备份目录或由用户自行备份。
-5. 运行新内核完整校验。
-6. 生成新 `dashboard.html`。
-
-迁移工具在新工作流稳定后开发，不作为第一批核心实现的阻塞项。
+新内核只识别由当前 `wf-init` 创建、包含 `.aiwf/` 的工作空间。对于旧格式目录，`wf` 和
+`wf-status` 返回 `not_initialized` 后停止，不扫描旧状态文件，不转换产物，也不提供迁移、
+备份或双格式兼容命令。需要继续旧项目时，由用户在新的空目录中通过 `wf-init` 重新初始化。
+任何低于当前版本的工作空间都不做升级或迁移，直接拒绝并要求重新初始化。
 
 ## 14. 测试与质量评价
 
@@ -870,7 +913,7 @@ stateDiagram-v2
 - 原子写入
 - 写锁、命令幂等和中断事务恢复
 - 产物版本递增
-- 草稿提升、旧版归档和内容哈希漂移检测
+- 草稿提升、revision 快照和内容哈希漂移检测
 - 审核指定 revision
 - 依赖失效
 - 记忆合并
@@ -898,7 +941,7 @@ stateDiagram-v2
 3. 技术设计与审核
 4. 多任务规格与审核
 5. 单任务实现与审核
-6. 测试生成与审核
+6. 单元测试与审核
 7. 流程完成
 8. 新会话恢复状态
 
@@ -947,7 +990,7 @@ stateDiagram-v2
 - `aiwf.py` 命令入口
 - `aiwf_core` 包结构
 - 基础测试工具和场景夹具
-- `_rewrite/src` 与正式 develop 路径之间的隔离检查
+- develop 正式路径与 release 路径之间的隔离检查
 - release 保护检查
 
 退出条件：
@@ -1033,17 +1076,20 @@ stateDiagram-v2
 
 - 设计阶段参考
 - 规格阶段参考
+- `task-plan` 任务规划产物
 - 任务 ID 和依赖管理
 - 多规格审核与阶段完成逻辑
 
 退出条件：
 
 - 设计引用已确认需求和决策
+- 设计基于真实代码，只负责架构和代码组织
+- 任务由批准后的设计在规格阶段拆分
 - 每个任务规格可追溯到设计与需求
-- 规格未机械继承测试代码指令
+- 任务规划和逐任务规格均不包含单元测试设计
 - 上游修订能使相关规格失效
 
-### 阶段 6：代码实现与测试生成
+### 阶段 6：代码实现与单元测试
 
 实施状态：实现已完成；效果验收按用户决定统一放到阶段 8 执行。
 
@@ -1052,8 +1098,8 @@ stateDiagram-v2
 产出：
 
 - 实现阶段参考
-- 测试阶段参考
-- 实现报告和测试报告登记
+- 单元测试阶段参考
+- 实现报告和单元测试报告登记
 - 代码改动范围记录
 - 测试执行适配接口
 
@@ -1082,15 +1128,14 @@ stateDiagram-v2
 - 五阶段、产物、问题、决策和事件展示正确
 - 页面生成失败不破坏工作流数据
 
-### 阶段 8：迁移、综合验证与切换
+### 阶段 8：综合验证与切换
 
-实施状态：重构实现与审查收口修复已完成。迁移工具和 develop 正式目录切换已完成；按用户决定，最终效果验收由用户统一执行，在验收通过前版本保持候选发布状态。
+实施状态：重构实现与审查收口修复已完成，develop 正式目录切换已完成；按用户决定，最终效果验收由用户统一执行，在验收通过前版本保持候选发布状态。旧工作空间兼容能力已按最新范围决定删除。
 
-目标：完成旧工作空间迁移能力和 develop 内正式入口替换。
+目标：完成 develop 内正式入口替换和综合验证。
 
 产出：
 
-- 一次性迁移工具
 - 完整端到端测试
 - 新旧需求分析对比报告
 - develop 正式目录结构
@@ -1100,7 +1145,7 @@ stateDiagram-v2
 - 三个入口和五阶段验收通过
 - 新会话恢复测试通过
 - 真实 PRD 质量评价达到预期
-- `_rewrite` 中的新实现迁入 develop 正式位置
+- develop 正式入口与共享内核安装定位验证通过
 - 被替代旧实现已删除
 - 恢复、已批准产物修订、结果契约和生成视图读写闭环
 - release 仍无任何改动
@@ -1146,22 +1191,22 @@ stateDiagram-v2
 
 控制：所有命令以 `wf-develop` 为工作目录；不使用 `git add .`；每个里程碑检查 `git diff -- wf-release`。
 
-### R-007：旧工作空间迁移拖累新设计
+### R-007：旧格式兼容重新进入新内核
 
-控制：迁移器独立开发，只做一次性转换；新内核不保留长期双格式兼容路径。
+控制：命令面、数据模型和存储层均不保留旧格式识别、读取或转换分支；旧项目只能重新初始化。
 
 ### R-008：路径或产物内容越界
 
-控制：工作空间内路径规范化后必须仍位于工作空间根目录；代码仓库路径单独授权且只在实现、
-测试阶段使用；PRD 先复制再读取；网页渲染转义非可信内容且不加载远程代码。
+控制：工作空间内路径规范化后必须仍位于工作空间根目录；代码仓库路径单独授权且只在技术设计、
+任务规格、实现和单元测试阶段使用；PRD 先复制再读取；网页渲染转义非可信内容且不加载远程代码。
 
 ## 18. 方案待确认项
 
 ### D-001：旧工作空间迁移时机
 
-决定：采用建议。
+决定：`2026-08-26` 调整为不实现旧工作空间迁移。
 
-建议：新五阶段流程稳定后再实现迁移器，不阻塞核心设计验证。
+原因：迁移收益极低，却会增加 Skill 入口、内核分支、数据模型兼容状态和测试维护成本。
 
 ### D-002：页面视觉复用范围
 
@@ -1219,9 +1264,160 @@ stateDiagram-v2
 
 - 增加内部 `recover`、`revise` 命令，不增加第四个 Skill。
 - `revise` 默认拒绝覆盖活动 work，只有用户明确确认后才归档并替换。
-- `prepare` 返回完整 JSON Schema 并创建结果模板，阶段指南只保留语义指导。
-- 技术设计只能引用 `accepted` 需求，活动任务不能依赖已撤回或延期任务。
-- `needs_decision` 仅兼容读取，不允许作为新结果提交或越过分析审核。
-- `memory.json` 保持事实源；`status` 只读报告投影漂移，写命令自动重建 `memory.md`。
-- `wf` 负责旧工作空间迁移预览和确认路由，`wf-status` 继续严格只读。
+- `prepare` 返回完整 JSON Schema 并创建结果 seed，阶段指南只保留语义指导。
+- 技术设计只能引用 `accepted` 需求，活动任务不能依赖已撤回任务。
+- `memory.json` 保持事实源；`status` 只读报告投影漂移，`recover` 显式重建 `memory.md` 后才允许继续推进。
+- `wf` 和 `wf-status` 不兼容旧工作空间，遇到未初始化目录时停止并引导用户重新初始化。
 - 根 README 切换到新架构，删除旧 Markdown 校验器及同步脚本。
+
+## 22. 二次审查修复
+
+`2026-08-26` 的完整审查发现修订结果与 Agent Schema 混用、已批准记忆增量被重放、需求到
+任务覆盖未形成门禁，以及任务 `deferred` 为不可达状态。修复采用以下决定：
+
+- 当时工作空间 Schema 提升到 `2`；该版本随后已被第 23 节的 Schema 3 取代。
+- `result_template` 更名为 `result_seed`；历史结果按 `result_schema` 递归投影为 Agent 可编辑字段。
+- 未批准返工保留候选记忆增量，已批准 revision 清空历史增量并提供 `affected_memory`。
+- 空 revision 被拒绝；正文、Agent 结果、记忆或精确依赖发生变化时才失效下游。
+- 分析结果至少包含一个当前范围需求；每个活动任务必须关联需求，全部 `accepted` 需求必须被覆盖。
+- 删除任务 `deferred`；延期交付通过需求 `deferred` 表达，暂时停工不改变任务状态。
+- `status` 在设计产物存在后检查需求覆盖漂移，所有规则由内核执行，不增加阶段指南负担。
+
+## 23. 三次审查修复
+
+`2026-08-26` 的闭环审查发现正式 Markdown 漂移只能检测不能恢复、依赖任务实现报告未进入
+任务包、健康检查遗漏循环依赖，以及运行时 integer 校验接受 JSON boolean。修复采用以下决定：
+
+- 工作空间 Schema 提升到 `3`，不兼容或迁移 Schema 1、2。
+- 每次提交保存不可变 Markdown revision 快照，注册表通过 `snapshot_path` 指向当前快照。
+- 增加内部 `resolve-drift` 命令；用户可采纳孤立的正式 Markdown 修改，或反复恢复批准快照，包括恢复缺失的正式正文。
+- 结构化结果、work 或快照漂移保持硬错误，不从 Markdown 反推机器状态。
+- 实现任务包加入前置任务的已批准实现报告，不加载无关任务产物。
+- 任务图、artifact 关联、问题影响阶段和事件最低结构由内核统一校验。
+- 修复 JSON boolean 被当作 integer 接受的问题，不引入第三方或自制通用 Schema 引擎。
+- 删除重写期不可达文案、未使用符号和 `wf-init` 的平台预设，不修改五份阶段指南。
+
+## 24. 五阶段职责重新对齐
+
+`2026-08-26` 根据业务目标重新审查五阶段后，确认旧实现把任务拆分过早放入技术设计，且需求
+分析缺少目标端过滤的结构化证据，容易让流程框架完整但 Agent 的实际语义工作偏弱。本次采用
+以下架构调整，当时工作空间 Schema 提升到 `4`；该版本随后被第 25 节的 Schema 5 和第 26 节的 Schema 6 取代，仍不兼容或迁移任何旧 Schema。
+
+### 24.1 阶段所有权
+
+| 阶段 | 负责 | 明确不负责 |
+|---|---|---|
+| 需求分析 | 从混合平台 PRD 提取目标端实施点，区分新增、修改、复用、延期和排除 | 技术架构、任务拆分、测试设计 |
+| 技术设计 | 基于真实仓库设计模块、文件、类、职责、接口、状态和数据交互 | 创建执行任务、逐行正式代码、单元测试设计 |
+| 任务规格 | 先形成 `task-plan`，再为每个任务说明做什么、怎么做和完成目标 | 正式代码、测试文件、用例、Mock 和断言设计 |
+| 代码实现 | 按规格修改生产代码，并自主处理不改变上游目标的局部冲突 | 新增或修改单元测试代码 |
+| 单元测试 | 基于真实实现编写并执行单元测试，记录结果与覆盖缺口 | 为通过测试擅自改变生产行为 |
+
+### 24.2 规格阶段内部状态
+
+不新增第六个公开阶段。`specification` 通过 `active_item` 区分两个工作种类：
+
+1. `active_item=null` 时为 `task_planning`，产物是 `artifacts/task-plan.md`，结果清单包含任务及硬依赖。
+2. `task-plan` 提交后任务状态为 `proposed`，审核通过后转为 `planned`。
+3. `active_item=T-XXX` 时为 `task_specification`，产物是 `artifacts/specs/T-XXX.md`。
+4. 所有活动任务规格审核通过后，公开阶段才推进到 `implementation`。
+
+依赖链固定为 `analysis -> design -> task-plan -> T-XXX-spec -> T-XXX-implementation -> T-XXX-test`。
+上游 revision 的语义变化沿该链递归标记下游产物和相关任务为 `stale`。
+
+### 24.3 结构化契约与仓库门禁
+
+- 分析结果增加 `target_platform`，每个功能点增加 `platform_scope`、`change_type`、
+  `scope_reason` 和 `disposition`；纯其他端内容不能作为 `proposed` 实施项。若分析审核后没有
+  `accepted` 需求，流程直接进入 `completed`，不创建虚假的设计或编码任务。
+- 设计结果只登记完整的 `accepted` 需求 ID 集合；提交和 `status` 都检查精确覆盖。
+- 任务索引只由 `task-plan` 提交生成；`status` 独立检查活动任务对全部 `accepted` 需求的覆盖。
+- 技术设计、任务规划、逐任务规格、实现和单元测试都要求配置可访问的代码仓库，并在任务包中
+  提供 `repository_context`；语义指南要求 Agent 继续读取相关真实代码，而不是只依赖仓库摘要。
+- 确定性格式、状态、ID、依赖、覆盖和版本规则留在 Python 内核；五份阶段指南只承载判断目标、
+  交付质量和应当停止的高影响边界，以减少 Agent 的框架负担。
+
+## 25. 初始化、决策路由与健康门禁收口
+
+`2026-08-26` 的完整闭环审查发现：初始化允许省略代码仓库但后续阶段强制要求仓库；问题全部
+回答后自动恢复原 work，无法表达中途需求变化；`status` 报告的结构错误没有统一推进门禁；
+技术方案仍有重写期路径和旧依赖示例。本次采用以下最终架构，工作空间 Schema 提升到 `5`，
+不兼容或迁移任何旧 Schema：
+
+- `wf-init`、CLI、初始化模型和 `project.json` 都强制要求有效代码仓库目录，不增加后补配置命令。
+- 状态增加 `decision` 模式；`decide` 只保存用户原始决定，不再隐式创建 successor work。
+- 增加 `route-decision`：`resume` 复制当前草稿继续，`revise` 原子归档当前 work 并创建受影响的
+  上游 revision work。
+- revision 路由目标必须是当前 work 的传递上游依赖、当前已批准 revision，并位于问题 `impact`
+  声明的阶段中；引擎不解释自然语言决定。
+- `status` 输出 `can_advance`、issue `blocking` 与 `recovery_action`；CLI 对正常推进执行统一错误门禁，
+  同时保留恢复、漂移处理、人工决定记录和上游修订入口。
+- 当时文档示例统一使用 Schema 5 和真实依赖链；该版本随后被第 26、27、28 节取代。
+- 五份阶段指南不增加状态机和格式规则；实际语义质量继续通过真实 PRD 独立评价，而不是增加
+  Skill 框架负担。
+
+## 26. Schema 6 闭环修复
+
+`2026-08-26` 的完整实现审查发现：待审核产物发生正文漂移后，健康检查建议的恢复命令无法
+处理该状态；问题创建时由 Agent 预估的 `impact` 被当作回修授权边界；实现与测试报告中的文件
+清单没有和任务期间的真实仓库变化核对；静态看板没有完整显示决策路由和恢复动作。修复采用
+以下架构，工作空间 Schema 提升到 `6`，仍不兼容或迁移任何旧 Schema：
+
+- `resolve-drift` 根据产物状态执行恢复。`approved` 保持现有 revision 语义；`review` 可以恢复
+  提交快照或把外部正文带入 successor work；`changes_requested` 可以在不破坏当前 work 的前提
+  下恢复正式正文，采纳外部正文仍需用户明确确认覆盖当前 work；`stale` 只允许恢复快照。
+- 健康检查为漂移返回产物状态、可恢复性、允许结果和准确的 `recovery_action`。正文漂移可以由
+  工作流恢复；结构化结果、work 或无法重建的历史数据损坏返回 `manual_repair_required`。
+- 问题 `impact` 保留为提问时的预估影响，不再作为 revision 路由的硬授权。引擎只强制目标是
+  当前 decision work 的传递上游、当前已批准 revision，并在事件中记录预估影响、实际目标及
+  是否发生影响扩展。
+- Git 仓库上下文记录任务开始时的状态与脏文件指纹。实现和测试提交时重新检查仓库，将 Agent
+  声明的文件清单与本 work 新产生的变化核对；非 Git 目录明确标记为有限校验，不伪装成完整
+  差异闭环。引擎不执行编码、不自动重跑测试，也不解释变更语义。
+- 看板消费状态检查已经生成的决策上下文和健康恢复信息，不在渲染器中复制状态机判断。
+- 三个 Skill 入口和五阶段交互保持不变。阶段指南只补充必要的判断边界，不加入仓库算法、状态
+  转换或 Schema 规则。真实 PRD 效果评价继续与工程结构测试分离，由最终统一验收执行。
+
+## 27. Schema 7 语义证据与上游纠正
+
+`2026-08-27` 对新旧版本真实需求运行结果进行根因分析后确认，主要缺口不在五阶段状态机，而在
+语义信息没有区分来源、代码事实缺少可验证证据、后续阶段持续读取历史撤回项，以及下游发现
+上游事实错误时无法闭环。本次保持“确定性 Python 内核 + Agent 自由 Markdown 产物”，不新增
+通用 claims 数据库，工作空间 Schema 提升到 `7`，仍不兼容或迁移任何旧 Schema。
+
+- `requirements.sources` 改为 `{kind, ref}`，明确区分 PRD、用户反馈、用户决策、仓库证据和
+  Agent 推断；`modify/reuse` 必须有可解析为 `<path>#<symbol>` 的仓库来源。
+- 需求分析获得仓库上下文，但只做范围级轻量调查；技术设计结果新增 `code_evidence`，内核对
+  `existing` 路径和符号执行存在性检查，`planned` 只登记计划，不解析 Markdown 或推断业务语义。
+- `memory_delta` 限定为 `repository_fact`、`architecture_decision`、`engineering_default`、
+  `validation_item`；内核分别校验证据、理由和验证点，并在审核通过后保留到结构化 memory。
+- design 和 task-plan 的正常任务包不再把完整 `requirements.json` 作为输入，而由
+  `facts.requirements` 提供当前 `accepted` 投影；withdrawn 仅留在索引、历史和看板审计视图。
+- 新增内部 `route-upstream`。只有当前 work 的仓库证据可以触发已批准传递上游的事实纠正；
+  引擎原子归档当前 work、创建上游 revision 并复用既有下游失效机制。范围变化、目标行为变化和
+  架构取舍仍必须通过 `question -> decide -> route-decision` 获得人工决策。
+- `status` 和 dashboard 分开报告当前需求与历史撤回需求；history/events 保持按需审计，不进入
+  正常 Agent 上下文。
+
+## 28. Schema 8 当前上下文与证据边界
+
+`2026-08-27` 的完整实现审查确认五阶段状态机与产物事务主链路已经成立，但平台过滤证据、人工
+决策生命周期、monorepo 作用域和技术设计现状证据仍混用了不同概念。本次不改变三个 Skill、
+五阶段、审核交互和产物形态，工作空间 Schema 提升到 `8`，仍不兼容或迁移任何旧 Schema：
+
+- 需求分析只对目标端和跨端的 `modify/reuse` 强制目标仓库证据；纯其他端排除项保留 PRD 来源
+  和范围理由，不要求在目标仓库中证明其他平台实现。
+- `decisions.json` 增加 `active/superseded` 生命周期、替代关系和替代来源。`memory.md` 只投影当前
+  有效决定，正常任务包不再重复提供完整决策档案；revision 结果可声明 `superseded_decisions`，
+  但只有人工审核通过后才应用。
+- 仓库上下文同时记录配置 `root` 与 `git_root`。证据和 Agent 调查都限制在配置 root；Git 基线仍
+  覆盖完整 worktree，以便拒绝当前 work 新产生的作用域外变化。
+- 技术设计的 `code_evidence` 只接受真实文件和符号，不再承载 planned 内容。非空仓库必须使用
+  `anchored` 模式；只有配置目录为空时允许 `greenfield`，计划内容继续保留在自由 Markdown 中。
+- PRD、用户决定、用户反馈、仓库证据和 Agent 推断分别采用可校验 ref；Agent 推断的 `self` 在
+  submit 时归一化为当前 artifact revision。
+- 所有任务包固定包含 `target_platform` 和 `facts`，analysis 的 `facts` 为空对象。阶段上下文、
+  决策生命周期和来源协议分别下沉到 `stage_context.py`、`decisions.py` 和 `sources.py`，
+  `workflow.py` 保留状态、事务和路由编排职责。
+- 自动化测试只证明确定性流程与读写闭环；真实 PRD 的 release/develop 盲评仍是 Agent 需求分析
+  与技术设计质量的最终验收，未执行前不得宣称语义能力目标已经完成。

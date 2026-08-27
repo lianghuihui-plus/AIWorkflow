@@ -8,25 +8,47 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .artifacts import (
+    artifact_integrity_issues,
     artifact_identity,
     find_artifact,
     invalidate_downstream,
     reconcile_requirements,
     reconcile_tasks,
     replace_artifact,
-    result_schema,
+    result_seed_from_record,
     semantic_result_hash,
     sha256_content,
+    validate_design_coverage,
     validate_result_manifest,
     verify_artifact_integrity,
 )
 from .context import build_work, copy_successor_work, validate_work
+from .decisions import (
+    append_decision,
+    supersede_decisions_by_artifact,
+    validate_active_decision_ids,
+)
 from .initialization import prepare_initialization
-from .model import AIWorkflowError, CommandRequest, SCHEMA_VERSION, next_id, now_iso
-from .migration import apply_migration, preview_migration
-from .render import DASHBOARD_FILENAME, render_dashboard, render_memory
-from .repository import inspect_repository
+from .model import (
+    AIWorkflowError,
+    CommandRequest,
+    SCHEMA_VERSION,
+    next_id,
+    now_iso,
+    require_evidence_list,
+)
+from .dashboard import DASHBOARD_FILENAME, render_dashboard
+from .memory_view import render_memory
+from .repository import (
+    compare_repository_context,
+    inspect_repository,
+    normalize_repository_path,
+    repository_has_files,
+    validate_repository_evidence,
+)
 from .review import advance_after_approval, apply_memory_delta, approve_indexes
+from .sources import normalize_requirement_sources
+from .stage_context import build_stage_context
 from .storage import WorkspaceStore, json_bytes, sha256_bytes
 
 
@@ -43,7 +65,7 @@ class WorkflowEngine:
         name: str,
         platform: str,
         prd_paths: Sequence[str],
-        code_repository: str | None = None,
+        code_repository: str,
         project_id: str | None = None,
     ) -> dict[str, Any]:
         prepared = prepare_initialization(
@@ -84,11 +106,6 @@ class WorkflowEngine:
             self.store.replace_generated_locked(".aiwf/memory.md", expected)
             recovered.append("generated:memory.md:rebuilt")
         return recovered
-
-    def migrate(self, *, apply: bool) -> dict[str, Any]:
-        if apply:
-            return apply_migration(self.store)
-        return preview_migration(self.store.root)
 
     def prepare_work(
         self,
@@ -136,6 +153,10 @@ class WorkflowEngine:
                 constraints = defaults["constraints"]
                 facts = defaults.get("facts")
                 repository_context = defaults.get("repository_context")
+            if repository_context is None:
+                repository_context = inspect_repository(
+                    self.store.read_json("project.json")["code_repository"]
+                )
             inputs = list(inputs or ())
             sources = list(sources or ())
             constraints = list(constraints or ())
@@ -159,9 +180,28 @@ class WorkflowEngine:
                 global_memory_sha256=sha256_content(
                     self.store.safe_path(".aiwf/memory.md").read_bytes()
                 ),
+                target_platform=self.store.read_json("project.json")["platform"],
                 facts=facts,
                 repository_context=repository_context,
+                feedback=instruction.strip() or None,
             )
+            artifact = find_artifact(
+                self.store.read_json("artifacts.json"), work["artifact"]["id"]
+            )
+            memory_delta_applied = False
+            if artifact is not None:
+                if artifact["status"] == "approved":
+                    raise AIWorkflowError(
+                        code="artifact_already_approved",
+                        message="Approved artifacts require an explicit revision request.",
+                        exit_code=6,
+                        details={"artifact_id": artifact["id"]},
+                    )
+                verify_artifact_integrity(self.store.root, artifact)
+                memory_delta_applied = artifact["approved_revision"] == artifact["revision"]
+                if memory_delta_applied:
+                    work = self._with_affected_memory(work, artifact)
+
             updated_state = dict(state)
             work_bytes = json_bytes(work)
             updated_state.update(
@@ -175,22 +215,16 @@ class WorkflowEngine:
             )
             changes: dict[str, bytes | None] = {
                 self._work_path(work_id, "work.json"): work_bytes,
-                work["result_output"]: json_bytes(work["result_template"]),
+                work["result_output"]: json_bytes(work["result_seed"]),
                 ".aiwf/state.json": json_bytes(updated_state),
             }
 
-            artifact = find_artifact(self.store.read_json("artifacts.json"), work["artifact"]["id"])
             if artifact is not None:
-                if artifact["status"] == "approved":
-                    raise AIWorkflowError(
-                        code="artifact_already_approved",
-                        message="Approved artifacts require an explicit revision request.",
-                        exit_code=6,
-                        details={"artifact_id": artifact["id"]},
-                    )
-                verify_artifact_integrity(self.store.root, artifact)
                 changes[work["draft_output"]] = self.store.safe_path(artifact["path"]).read_bytes()
-                changes[work["result_output"]] = self._editable_result_bytes(artifact)
+                changes[work["result_output"]] = self._editable_result_bytes(
+                    artifact,
+                    preserve_memory_delta=not memory_delta_applied,
+                )
 
             request_digest = self._digest({"work": work})
             self.store.commit_locked(
@@ -217,6 +251,16 @@ class WorkflowEngine:
             return self._next_testing_task(requested)
         if stage != "specification":
             return requested
+        task_plan = find_artifact(self.store.read_json("artifacts.json"), "task-plan")
+        if task_plan is None or task_plan["status"] != "approved":
+            if requested is not None:
+                raise AIWorkflowError(
+                    code="task_plan_required",
+                    message="Approve the task plan before selecting an individual specification.",
+                    exit_code=6,
+                    details={"id": requested},
+                )
+            return None
         tasks = self.store.read_json("tasks.json")["items"]
         eligible = [item for item in tasks if item["status"] in {"planned", "stale"}]
         if requested is not None:
@@ -288,125 +332,58 @@ class WorkflowEngine:
         active_item: str | None,
         instruction: str,
     ) -> dict[str, Any]:
-        project = self.store.read_json("project.json")
-        if stage == "analysis":
-            context = {
-                "goal": "理解全部 PRD，形成可审核并能支撑技术设计的整体需求分析。",
-                "inputs": [
-                    ".aiwf/project.json",
-                    *project["prd_files"],
-                    ".aiwf/requirements.json",
-                ],
-                "sources": list(project["prd_files"]),
-                "depends_on": [],
-                "stage_guide": "references/stages/analysis.md",
-                "constraints": [
-                    "区分已知事实、合理推断和待用户决策事项。",
-                    "只有缺少答案会阻止安全推进时才创建阻塞问题。",
-                    "只写任务包指定的草稿和结果文件。",
-                ],
-            }
-        elif stage == "design":
-            analysis = self._approved_artifact("analysis")
-            context = {
-                "goal": "基于已确认需求形成可实施的整体技术设计与任务拆分。",
-                "inputs": [
-                    ".aiwf/project.json",
-                    ".aiwf/requirements.json",
-                    analysis["path"],
-                ],
-                "sources": [analysis["path"]],
-                "depends_on": [f"analysis@{analysis['approved_revision']}"],
-                "stage_guide": "references/stages/design.md",
-                "constraints": [
-                    "设计必须引用已确认需求，不重新解释或扩大业务范围。",
-                    "任务拆分表达实现边界和依赖，不预写机械测试步骤。",
-                    "只写任务包指定的草稿和结果文件。",
-                ],
-            }
-        elif stage == "specification":
-            analysis = self._approved_artifact("analysis")
-            design = self._approved_artifact("design")
-            task = next(
-                item
-                for item in self.store.read_json("tasks.json")["items"]
-                if item["id"] == active_item
-            )
-            context = {
-                "goal": f"为 {task['id']}（{task['title']}）生成可直接指导实现的任务规格。",
-                "inputs": [analysis["path"], design["path"]],
-                "sources": [analysis["path"], design["path"]],
-                "depends_on": [
-                    f"analysis@{analysis['approved_revision']}",
-                    f"design@{design['approved_revision']}",
-                ],
-                "stage_guide": "references/stages/specification.md",
-                "facts": self._task_facts(task),
-                "constraints": [
-                    "规格范围不得超出当前 active item。",
-                    "明确行为与边界，但不规定测试代码的具体实现。",
-                    "只写任务包指定的草稿和结果文件。",
-                ],
-            }
-        elif stage == "implementation":
-            design = self._approved_artifact("design")
-            specification = self._approved_artifact(f"{active_item}-spec")
-            task = self._task(active_item)
-            dependency_artifacts = [
-                self._approved_artifact(f"{dependency}-implementation")
-                for dependency in task["depends_on"]
-            ]
-            context = {
-                "goal": f"按照已批准规格实现 {task['id']}（{task['title']}），并记录实际验证结果。",
-                "inputs": [specification["path"], design["path"]],
-                "sources": [specification["path"], design["path"]],
-                "depends_on": [
-                    f"{specification['id']}@{specification['approved_revision']}",
-                    *[
-                        f"{artifact['id']}@{artifact['approved_revision']}"
-                        for artifact in dependency_artifacts
-                    ],
-                ],
-                "stage_guide": "references/stages/implementation.md",
-                "facts": self._task_facts(task),
-                "repository_context": inspect_repository(project["code_repository"]),
-                "constraints": [
-                    "保护任务开始前已经存在的代码仓库改动。",
-                    "只处理当前 active item，不提交或清理版本控制状态。",
-                    "只写任务包指定的报告草稿、结果文件和任务范围内代码。",
-                ],
-            }
-        elif stage == "testing":
-            specification = self._approved_artifact(f"{active_item}-spec")
-            implementation = self._approved_artifact(f"{active_item}-implementation")
-            task = self._task(active_item)
-            context = {
-                "goal": f"基于真实实现为 {task['id']}（{task['title']}）补充并执行必要测试。",
-                "inputs": [specification["path"], implementation["path"]],
-                "sources": [implementation["path"], specification["path"]],
-                "depends_on": [
-                    f"{implementation['id']}@{implementation['approved_revision']}"
-                ],
-                "stage_guide": "references/stages/testing.md",
-                "facts": self._task_facts(task),
-                "repository_context": inspect_repository(project["code_repository"]),
-                "constraints": [
-                    "测试设计基于真实实现和仓库现有测试模式。",
-                    "保护任务开始前已经存在的代码仓库改动。",
-                    "只写任务包指定的报告草稿、结果文件和任务范围内代码。",
-                ],
-            }
-        else:
+        return build_stage_context(
+            stage,
+            active_item=active_item,
+            instruction=instruction,
+            project=self.store.read_json("project.json"),
+            approved_artifact=self._approved_artifact,
+            current_requirements=self._current_requirements,
+            task_by_id=self._task,
+            task_facts=self._task_facts,
+        )
+
+    def _verify_repository_result(
+        self,
+        work: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        stage = work["stage"]
+        field_name = {
+            "implementation": "changed_files",
+            "testing": "test_files",
+        }.get(stage)
+        if field_name is None:
+            return None
+
+        baseline = work.get("repository_context")
+        if not isinstance(baseline, dict):
             raise AIWorkflowError(
-                code="stage_not_implemented",
-                message=f"Automatic task context for stage '{stage}' is not connected yet.",
-                exit_code=3,
-                details={"stage": stage, "phase": 6},
+                code="repository_context_missing",
+                message="Implementation and testing work require a repository baseline.",
+                exit_code=6,
             )
-        goal = context["goal"]
-        if instruction.strip():
-            goal = f"{goal} 当前用户补充要求：{instruction.strip()}"
-        return {**context, "goal": goal}
+        declared = [normalize_repository_path(path) for path in result[field_name]]
+        current = inspect_repository(baseline["root"])
+        comparison = compare_repository_context(baseline, current)
+        observed = comparison["changed_files"]
+        if observed is not None and set(declared) != set(observed):
+            raise AIWorkflowError(
+                code="repository_change_mismatch",
+                message="Reported files do not match repository changes made during this work.",
+                exit_code=4,
+                details={
+                    "field": field_name,
+                    "reported": sorted(declared),
+                    "observed": observed,
+                    "unreported": sorted(set(observed) - set(declared)),
+                    "not_observed": sorted(set(declared) - set(observed)),
+                },
+            )
+        return {
+            "level": comparison["verification_level"],
+            "observed_files": observed,
+        }
 
     def _task(self, task_id: str | None) -> dict[str, Any]:
         task = next(
@@ -434,6 +411,70 @@ class WorkflowEngine:
             "task": task,
             "requirements": [requirement_by_id[item_id] for item_id in task["requirements"]],
         }
+
+    def _current_requirements(self) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self.store.read_json("requirements.json")["items"]
+            if item["disposition"] == "accepted"
+        ]
+
+    def _verify_semantic_evidence(
+        self,
+        work: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> None:
+        repository = work.get("repository_context")
+        if not isinstance(repository, dict):
+            raise AIWorkflowError(
+                code="repository_context_missing",
+                message="Semantic work requires repository context for evidence validation.",
+                exit_code=6,
+            )
+        evidence: list[Mapping[str, Any]] = []
+        for operation in result["memory_delta"]:
+            evidence.extend(operation["evidence"])
+        if work["stage"] == "analysis":
+            for requirement in result["requirements"]:
+                repository_sources = [
+                    source
+                    for source in requirement["sources"]
+                    if source["kind"] == "repository"
+                ]
+                if (
+                    requirement["change_type"] in {"modify", "reuse"}
+                    and requirement["platform_scope"] != "other"
+                    and not repository_sources
+                ):
+                    raise AIWorkflowError(
+                        code="repository_source_required",
+                        message="Modified or reused requirements require repository evidence.",
+                        exit_code=4,
+                        details={"title": requirement["title"]},
+                    )
+                for source in repository_sources:
+                    path, separator, symbol = source["ref"].rpartition("#")
+                    if not separator or not path or not symbol:
+                        raise AIWorkflowError(
+                            code="invalid_repository_source",
+                            message="Repository requirement sources must use '<path>#<symbol>'.",
+                            exit_code=4,
+                            details={"ref": source["ref"]},
+                        )
+                    evidence.append({"path": path, "symbol": symbol})
+        elif work["stage"] == "design":
+            if result["design_mode"] == "greenfield":
+                if repository_has_files(repository["root"]):
+                    raise AIWorkflowError(
+                        code="invalid_greenfield_design",
+                        message="Greenfield design is only allowed for an empty configured repository.",
+                        exit_code=4,
+                        details={"root": repository["root"]},
+                    )
+            else:
+                evidence.extend(result["code_evidence"])
+        if evidence:
+            validate_repository_evidence(repository["root"], evidence)
 
     def _approved_artifact(self, artifact_id: str) -> dict[str, Any]:
         artifact = find_artifact(self.store.read_json("artifacts.json"), artifact_id)
@@ -500,23 +541,54 @@ class WorkflowEngine:
             result = validate_result_manifest(
                 work["stage"], raw_result, active_item=work["active_item"]
             )
+            project = self.store.read_json("project.json")
             requirements = self.store.read_json("requirements.json")
             tasks = self.store.read_json("tasks.json")
             artifacts = self.store.read_json("artifacts.json")
+            decisions = self.store.read_json("decisions.json")
             artifact_id = work["artifact"]["id"]
             current_artifact = find_artifact(artifacts, artifact_id)
             if current_artifact is not None:
                 verify_artifact_integrity(self.store.root, current_artifact)
             revision = 1 if current_artifact is None else current_artifact["revision"] + 1
+            if work["stage"] == "analysis":
+                result = {
+                    **result,
+                    "requirements": normalize_requirement_sources(
+                        result["requirements"],
+                        workspace_root=self.store.root,
+                        work=work,
+                        decisions=decisions,
+                        artifact_ref=f"{artifact_id}@{revision}",
+                        archived_work_ids=self._archived_work_ids(artifacts),
+                    ),
+                }
+            validate_active_decision_ids(
+                decisions, result.get("superseded_decisions", [])
+            )
+            self._verify_semantic_evidence(work, result)
 
             if work["stage"] == "analysis":
+                if result["target_platform"] != project["platform"]:
+                    raise AIWorkflowError(
+                        code="target_platform_mismatch",
+                        message="Analysis target_platform must match the initialized project platform.",
+                        exit_code=4,
+                        details={
+                            "expected": project["platform"],
+                            "actual": result["target_platform"],
+                        },
+                    )
                 requirements, result = reconcile_requirements(
                     requirements, result, revision=revision
                 )
             elif work["stage"] == "design":
+                validate_design_coverage(requirements, result)
+            elif work["stage"] == "specification" and work["active_item"] is None:
                 tasks, result = reconcile_tasks(
                     tasks, requirements, result, revision=revision
                 )
+            repository_verification = self._verify_repository_result(work, result)
             result = {
                 **result,
                 "artifact_id": artifact_id,
@@ -525,20 +597,54 @@ class WorkflowEngine:
                 "depends_on": list(work["depends_on"]),
                 "sources": list(work["sources"]),
             }
+            if repository_verification is not None:
+                result["repository_verification"] = repository_verification
             normalized_result_bytes = json_bytes(result)
             work_snapshot_bytes = json_bytes(work)
 
             invalidated: list[str] = []
             semantic_changed = False
+            memory_changed = False
+            decision_changed = False
+            content_changed = False
+            dependency_changed = False
             if current_artifact is not None:
                 current_result = self.store.read_json_path(current_artifact["result_path"])
                 semantic_changed = semantic_result_hash(current_result) != semantic_result_hash(result)
+                memory_changed = bool(result["memory_delta"])
+                decision_changed = bool(result.get("superseded_decisions"))
+                content_changed = current_artifact["content_sha256"] != sha256_content(
+                    draft_bytes
+                )
+                dependency_changed = current_artifact["depends_on"] != list(
+                    work["depends_on"]
+                )
+            if (
+                current_artifact is not None
+                and current_artifact["approved_revision"] is not None
+                and not (
+                    content_changed
+                    or semantic_changed
+                    or memory_changed
+                    or decision_changed
+                    or dependency_changed
+                )
+            ):
+                raise AIWorkflowError(
+                    code="revision_has_no_changes",
+                    message="A new revision must change its artifact, result, memory, decisions, or dependencies.",
+                    exit_code=4,
+                    details={"artifact_id": artifact_id},
+                )
             if (
                 current_artifact is not None
                 and current_artifact["approved_revision"] is not None
                 and (
-                    current_artifact["content_sha256"] != sha256_content(draft_bytes)
+                    content_changed
                     or semantic_changed
+                    or memory_changed
+                    or decision_changed
+                    or dependency_changed
                 )
             ):
                 artifacts, invalidated = invalidate_downstream(
@@ -546,7 +652,12 @@ class WorkflowEngine:
                     artifact_id=artifact_id,
                     revision=current_artifact["approved_revision"],
                 )
-                tasks = self._mark_tasks_stale(tasks, invalidated, work["stage"])
+                tasks = self._mark_tasks_stale(
+                    tasks,
+                    invalidated,
+                    work["stage"],
+                    active_item=work["active_item"],
+                )
 
             timestamp = now_iso()
             registered = {
@@ -555,6 +666,7 @@ class WorkflowEngine:
                 "stage": work["stage"],
                 "active_item": work["active_item"],
                 "path": work["artifact"]["output"],
+                "snapshot_path": f".aiwf/history/{artifact_id}/{revision}.md",
                 "result_path": f".aiwf/results/{artifact_id}/{revision}.json",
                 "work_path": f".aiwf/history/{artifact_id}/{revision}.work.json",
                 "content_sha256": sha256_content(draft_bytes),
@@ -588,13 +700,10 @@ class WorkflowEngine:
                 ".aiwf/artifacts.json": json_bytes(artifacts),
                 ".aiwf/state.json": json_bytes(updated_state),
                 registered["path"]: draft_bytes,
+                registered["snapshot_path"]: draft_bytes,
                 registered["result_path"]: normalized_result_bytes,
                 registered["work_path"]: work_snapshot_bytes,
             }
-            if current_artifact is not None:
-                changes[
-                    f".aiwf/history/{artifact_id}/{current_artifact['revision']}.md"
-                ] = self.store.safe_path(current_artifact["path"]).read_bytes()
 
             request_digest = sha256_bytes(draft_bytes + b"\0" + raw_result_bytes)
             additional_events: list[tuple[str, Mapping[str, Any]]] = []
@@ -694,16 +803,22 @@ class WorkflowEngine:
             updated_state, stage_advanced = advance_after_approval(
                 state,
                 artifacts,
+                requirements,
                 tasks,
                 stage=artifact["stage"],
                 reviewed_ref=reviewed_ref,
             )
-            decisions = self.store.read_json("decisions.json")
+            decisions = supersede_decisions_by_artifact(
+                self.store.read_json("decisions.json"),
+                result.get("superseded_decisions", []),
+                artifact_ref=reviewed_ref,
+            )
             changes = {
                 ".aiwf/artifacts.json": json_bytes(artifacts),
                 ".aiwf/requirements.json": json_bytes(requirements),
                 ".aiwf/tasks.json": json_bytes(tasks),
                 ".aiwf/memory.json": json_bytes(memory),
+                ".aiwf/decisions.json": json_bytes(decisions),
                 ".aiwf/memory.md": render_memory(memory, decisions).encode("utf-8"),
                 ".aiwf/state.json": json_bytes(updated_state),
             }
@@ -746,6 +861,36 @@ class WorkflowEngine:
             revision,
             feedback=feedback,
             command_prefix="revise",
+            supersede_active_work=supersede_active_work,
+        )
+
+    def resolve_artifact_drift(
+        self,
+        artifact_id: str,
+        revision: int,
+        *,
+        outcome: str,
+        feedback: str = "",
+        supersede_active_work: bool = False,
+    ) -> dict[str, Any]:
+        if outcome == "adopt":
+            return self._request_changes(
+                artifact_id,
+                revision,
+                feedback=feedback,
+                command_prefix="resolve-drift",
+                supersede_active_work=supersede_active_work,
+                adopt_content_drift=True,
+            )
+        if outcome != "discard":
+            raise AIWorkflowError(
+                code="invalid_drift_outcome",
+                message="Artifact drift outcome must be adopt or discard.",
+                exit_code=4,
+            )
+        return self._discard_artifact_drift(
+            artifact_id,
+            revision,
             supersede_active_work=supersede_active_work,
         )
 
@@ -793,6 +938,10 @@ class WorkflowEngine:
             timestamp = now_iso()
             for raw_question in questions:
                 question = self._normalize_question(raw_question)
+                validate_active_decision_ids(
+                    self.store.read_json("decisions.json"),
+                    question["supersedes_decisions"],
+                )
                 question_id = next_id("question", existing_ids)
                 existing_ids.append(question_id)
                 created.append(
@@ -886,12 +1035,12 @@ class WorkflowEngine:
                 "question_id": question_id,
                 "decision": decision,
                 "impact": list(question["impact"]),
+                "status": "active",
+                "supersedes": list(question["supersedes_decisions"]),
+                "superseded_by": None,
                 "created_at": timestamp,
             }
-            updated_decisions = {
-                "schema_version": SCHEMA_VERSION,
-                "items": [*decisions["items"], decision_item],
-            }
+            updated_decisions = append_decision(decisions, decision_item)
             updated_question_items = []
             for item in questions["items"]:
                 if item["id"] == question_id:
@@ -913,43 +1062,20 @@ class WorkflowEngine:
                 ".aiwf/decisions.json": json_bytes(updated_decisions),
                 ".aiwf/memory.md": updated_memory_bytes,
             }
-            successor_work_id: str | None = None
             previous_work_id = state["active_work"]
             previous_work = self._read_work(
                 previous_work_id,
                 expected_hash=state["active_work_sha256"],
             )
+            updated_work = {
+                **previous_work,
+                "global_memory_sha256": sha256_content(updated_memory_bytes),
+            }
+            updated_work_bytes = json_bytes(updated_work)
+            changes[self._work_path(previous_work_id, "work.json")] = updated_work_bytes
+            updated_state["active_work_sha256"] = sha256_content(updated_work_bytes)
             if not remaining:
-                successor_work_id = self._next_work_id()
-                successor = copy_successor_work(
-                    previous_work,
-                    work_id=successor_work_id,
-                    global_memory_sha256=sha256_content(updated_memory_bytes),
-                )
-                successor_bytes = json_bytes(successor)
-                changes[self._work_path(successor_work_id, "work.json")] = successor_bytes
-                for source_name, target_name in (
-                    (previous_work["draft_output"], successor["draft_output"]),
-                    (previous_work["result_output"], successor["result_output"]),
-                ):
-                    source_path = self.store.safe_path(source_name)
-                    if source_path.is_file():
-                        changes[target_name] = source_path.read_bytes()
-                updated_state.update(
-                    {
-                        "mode": "working",
-                        "active_work": successor_work_id,
-                        "active_work_sha256": sha256_content(successor_bytes),
-                    }
-                )
-            else:
-                updated_work = {
-                    **previous_work,
-                    "global_memory_sha256": sha256_content(updated_memory_bytes),
-                }
-                updated_work_bytes = json_bytes(updated_work)
-                changes[self._work_path(previous_work_id, "work.json")] = updated_work_bytes
-                updated_state["active_work_sha256"] = sha256_content(updated_work_bytes)
+                updated_state["mode"] = "decision"
             changes[".aiwf/state.json"] = json_bytes(updated_state)
             event = self.store.commit_locked(
                 changes,
@@ -957,22 +1083,246 @@ class WorkflowEngine:
                 event_data={
                     "question_id": question_id,
                     "decision_id": decision_id,
+                    "work_id": previous_work_id,
+                    "routing_required": not remaining,
+                },
+                command_key=command_key,
+                request_digest=request_digest,
+            )
+            return dict(event["data"])
+
+    def route_decision(
+        self,
+        work_id: str,
+        *,
+        outcome: str,
+        artifact_id: str | None = None,
+        revision: int | None = None,
+    ) -> dict[str, Any]:
+        if outcome == "resume":
+            if artifact_id is not None or revision is not None:
+                raise AIWorkflowError(
+                    code="invalid_decision_route",
+                    message="Resume does not accept an artifact target.",
+                    exit_code=2,
+                )
+            return self._resume_after_decisions(work_id)
+        if outcome != "revise":
+            raise AIWorkflowError(
+                code="invalid_decision_route",
+                message="Decision route must be resume or revise.",
+                exit_code=2,
+            )
+        if artifact_id is None or revision is None:
+            raise AIWorkflowError(
+                code="invalid_decision_route",
+                message="Revision routing requires an artifact id and revision.",
+                exit_code=2,
+            )
+        return self._request_changes(
+            artifact_id,
+            revision,
+            feedback="",
+            command_prefix="route-decision",
+            supersede_active_work=True,
+            decision_work_id=work_id,
+        )
+
+    def route_upstream(
+        self,
+        work_id: str,
+        *,
+        artifact_id: str,
+        revision: int,
+        correction: str,
+        evidence: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if not correction.strip():
+            raise AIWorkflowError(
+                code="invalid_upstream_correction",
+                message="Upstream factual correction must explain the incorrect fact.",
+                exit_code=2,
+            )
+        if not evidence:
+            raise AIWorkflowError(
+                code="invalid_upstream_correction",
+                message="Upstream factual correction requires repository evidence.",
+                exit_code=2,
+            )
+        return self._request_changes(
+            artifact_id,
+            revision,
+            feedback=correction,
+            command_prefix="route-upstream",
+            supersede_active_work=True,
+            upstream_work_id=work_id,
+            upstream_evidence=evidence,
+        )
+
+    def _resume_after_decisions(self, work_id: str) -> dict[str, Any]:
+        command_key = f"route-decision:{work_id}"
+        request_digest = self._digest({"work_id": work_id, "outcome": "resume"})
+        with self.store.lock(exclusive=True):
+            self._recover_and_sync_locked()
+            existing_event = self.store.find_event(command_key)
+            if existing_event is not None:
+                if existing_event["request_digest"] != request_digest:
+                    raise AIWorkflowError(
+                        code="idempotency_conflict",
+                        message="Decision work already has a different route.",
+                        exit_code=6,
+                    )
+                return dict(existing_event["data"])
+            state = self.store.read_json("state.json")
+            self._validate_decision_state(state, work_id)
+            decisions = self._resolved_decisions_for_work(work_id)
+            previous_work = self._read_work(
+                work_id,
+                expected_hash=state["active_work_sha256"],
+            )
+            successor_work_id = self._next_work_id()
+            successor = copy_successor_work(
+                previous_work,
+                work_id=successor_work_id,
+                global_memory_sha256=sha256_content(
+                    self.store.safe_path(".aiwf/memory.md").read_bytes()
+                ),
+            )
+            successor_bytes = json_bytes(successor)
+            changes: dict[str, bytes | None] = {
+                self._work_path(successor_work_id, "work.json"): successor_bytes,
+            }
+            for source_name, target_name in (
+                (previous_work["draft_output"], successor["draft_output"]),
+                (previous_work["result_output"], successor["result_output"]),
+            ):
+                source_path = self.store.safe_path(source_name)
+                if source_path.is_file():
+                    changes[target_name] = source_path.read_bytes()
+            updated_state = {
+                **state,
+                "mode": "working",
+                "active_work": successor_work_id,
+                "active_work_sha256": sha256_content(successor_bytes),
+                "updated_at": now_iso(),
+            }
+            changes[".aiwf/state.json"] = json_bytes(updated_state)
+            event = self.store.commit_locked(
+                changes,
+                event_type="decision_route_selected",
+                event_data={
+                    "work_id": work_id,
+                    "outcome": "resume",
+                    "decision_ids": [item["decision"]["id"] for item in decisions],
                     "successor_work_id": successor_work_id,
                 },
                 command_key=command_key,
                 request_digest=request_digest,
             )
-            if successor_work_id is not None and previous_work_id is not None:
-                shutil.rmtree(
-                    self.store.data_root / "work" / previous_work_id,
-                    ignore_errors=True,
-                )
+            shutil.rmtree(self.store.data_root / "work" / work_id, ignore_errors=True)
             return dict(event["data"])
+
+    def _validate_decision_state(self, state: Mapping[str, Any], work_id: str) -> None:
+        if state["mode"] != "decision" or state["active_work"] != work_id:
+            raise AIWorkflowError(
+                code="invalid_state_transition",
+                message="Only fully answered decision work can be routed.",
+                exit_code=6,
+                details={"work_id": work_id, "mode": state["mode"]},
+            )
+
+    def _resolved_decisions_for_work(self, work_id: str) -> list[dict[str, Any]]:
+        questions = [
+            item
+            for item in self.store.read_json("questions.json")["items"]
+            if item["work_id"] == work_id and item["status"] == "resolved"
+        ]
+        decisions_by_id = {
+            item["id"]: item for item in self.store.read_json("decisions.json")["items"]
+        }
+        resolved = [
+            {"question": question, "decision": decisions_by_id.get(question["decision_id"])}
+            for question in questions
+        ]
+        if not resolved or any(item["decision"] is None for item in resolved):
+            raise AIWorkflowError(
+                code="invalid_decision_route",
+                message="Decision work does not have a complete set of recorded decisions.",
+                exit_code=6,
+                details={"work_id": work_id},
+            )
+        return resolved
+
+    def _decision_feedback(self, resolved: Sequence[Mapping[str, Any]]) -> str:
+        lines = ["Revise this artifact according to the confirmed decisions:"]
+        for item in resolved:
+            question = item["question"]
+            decision = item["decision"]
+            lines.append(f"- {question['id']} {question['question']}")
+            lines.append(f"  Decision: {decision['decision']}")
+        return "\n".join(lines)
+
+    def _validate_decision_revision_target(
+        self,
+        work: Mapping[str, Any],
+        artifact: Mapping[str, Any],
+        resolved: Sequence[Mapping[str, Any]],
+        artifacts: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        target_ref = f"{artifact['id']}@{artifact['revision']}"
+        upstream = self._upstream_references(work, artifacts)
+        impacted_stages = {
+            stage
+            for item in resolved
+            for stage in item["question"]["impact"]
+        }
+        if target_ref not in upstream:
+            raise AIWorkflowError(
+                code="invalid_decision_route",
+                message="Revision target must be an approved upstream dependency of the decision work.",
+                exit_code=6,
+                details={
+                    "target": target_ref,
+                    "upstream": sorted(upstream),
+                },
+            )
+        return {
+            "declared_impacts": sorted(impacted_stages),
+            "target_stage": artifact["stage"],
+            "impact_expanded": artifact["stage"] not in impacted_stages,
+        }
+
+    def _upstream_references(
+        self,
+        work: Mapping[str, Any],
+        artifacts: Mapping[str, Any],
+    ) -> set[str]:
+        artifacts_by_ref = {
+            f"{item['id']}@{item['revision']}": item for item in artifacts["items"]
+        }
+        upstream: set[str] = set()
+        pending = list(work["depends_on"])
+        while pending:
+            reference = pending.pop()
+            if reference in upstream:
+                continue
+            dependency = artifacts_by_ref.get(reference)
+            if dependency is None:
+                raise AIWorkflowError(
+                    code="invalid_decision_route",
+                    message="Decision work has an unresolved upstream dependency.",
+                    exit_code=6,
+                    details={"reference": reference},
+                )
+            upstream.add(reference)
+            pending.extend(dependency["depends_on"])
+        return upstream
 
     def inspect(self) -> dict[str, Any]:
         with self.store.lock(exclusive=False):
             if self.store.has_pending_transactions():
                 return {"status": "needs_recovery", "workspace": str(self.store.root)}
+            self.store.read_events()
             documents = {name: self.store.read_json(name) for name in (
                 "project.json",
                 "state.json",
@@ -1000,16 +1350,22 @@ class WorkflowEngine:
                         "details": {"path": ".aiwf/memory.md"},
                     }
                 )
+            drifted_artifact_ids: set[str] = set()
             for artifact in documents["artifacts.json"]["items"]:
-                try:
-                    verify_artifact_integrity(self.store.root, artifact)
-                except AIWorkflowError as error:
+                artifact_issues = artifact_integrity_issues(self.store.root, artifact)
+                if artifact_issues:
+                    drifted_artifact_ids.add(artifact["id"])
                     issues.append(
                         {
                             "level": "error",
-                            "type": error.code,
-                            "message": error.message,
-                            "details": error.details,
+                            "type": "artifact_drift",
+                            "message": "Registered artifact files do not match their recorded revision.",
+                            "details": {
+                                "artifact_id": artifact["id"],
+                                "revision": artifact["revision"],
+                                "artifact_status": artifact["status"],
+                                "issues": artifact_issues,
+                            },
                         }
                     )
             project = documents["project.json"]
@@ -1037,10 +1393,10 @@ class WorkflowEngine:
                         }
                     )
             repository = project["code_repository"]
-            if repository is not None and not Path(repository).is_dir():
+            if not Path(repository).is_dir():
                 issues.append(
                     {
-                        "level": "warning",
+                        "level": "error",
                         "type": "code_repository_unavailable",
                         "message": "Configured code repository is not accessible.",
                         "details": {"path": repository},
@@ -1092,11 +1448,49 @@ class WorkflowEngine:
                         }
                     )
             requirement_ids = {item["id"] for item in documents["requirements.json"]["items"]}
+            accepted_requirement_ids = {
+                item["id"]
+                for item in documents["requirements.json"]["items"]
+                if item["disposition"] == "accepted"
+            }
+            design_artifact = find_artifact(documents["artifacts.json"], "design")
+            if design_artifact is not None and "design" not in drifted_artifact_ids:
+                design_result = self.store.read_json_path(design_artifact["result_path"])
+                design_requirement_ids = set(design_result.get("requirements", []))
+                unknown_design_requirements = sorted(
+                    design_requirement_ids - accepted_requirement_ids
+                )
+                missing_design_requirements = sorted(
+                    accepted_requirement_ids - design_requirement_ids
+                )
+                if unknown_design_requirements or missing_design_requirements:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "design_requirement_mismatch",
+                            "message": "Technical design coverage does not match accepted requirements.",
+                            "details": {
+                                "unknown": unknown_design_requirements,
+                                "missing": missing_design_requirements,
+                            },
+                        }
+                    )
             task_ids = {item["id"] for item in documents["tasks.json"]["items"]}
+            covered_requirement_ids: set[str] = set()
             for task in documents["tasks.json"]["items"]:
-                unknown_requirements = sorted(set(task["requirements"]) - requirement_ids)
+                task_requirement_ids = set(task["requirements"])
+                unknown_requirements = sorted(task_requirement_ids - requirement_ids)
+                unavailable_requirements = sorted(
+                    (task_requirement_ids & requirement_ids) - accepted_requirement_ids
+                    if task["status"] != "withdrawn"
+                    else set()
+                )
                 unknown_dependencies = sorted(set(task["depends_on"]) - task_ids)
-                if unknown_requirements or unknown_dependencies:
+                if task["status"] != "withdrawn":
+                    covered_requirement_ids.update(
+                        task_requirement_ids & accepted_requirement_ids
+                    )
+                if unknown_requirements or unavailable_requirements or unknown_dependencies:
                     issues.append(
                         {
                             "level": "error",
@@ -1105,8 +1499,22 @@ class WorkflowEngine:
                             "details": {
                                 "task_id": task["id"],
                                 "requirements": unknown_requirements,
+                                "unavailable_requirements": unavailable_requirements,
                                 "dependencies": unknown_dependencies,
                             },
+                        }
+                    )
+            if any(item["id"] == "task-plan" for item in documents["artifacts.json"]["items"]):
+                uncovered_requirements = sorted(
+                    accepted_requirement_ids - covered_requirement_ids
+                )
+                if uncovered_requirements:
+                    issues.append(
+                        {
+                            "level": "error",
+                            "type": "uncovered_requirements",
+                            "message": "Accepted requirements are not covered by active task-plan tasks.",
+                            "details": {"ids": uncovered_requirements},
                         }
                     )
             pending_review_items = [
@@ -1119,31 +1527,79 @@ class WorkflowEngine:
                 for question_id in state["blocking_questions"]
                 if question_id in open_questions
             ]
+            decisions_by_id = {
+                item["id"]: item for item in documents["decisions.json"]["items"]
+            }
+            decision_context = []
+            if state["mode"] == "decision":
+                for question in documents["questions.json"]["items"]:
+                    if (
+                        question["work_id"] == state["active_work"]
+                        and question["status"] == "resolved"
+                        and question["decision_id"] in decisions_by_id
+                    ):
+                        decision = decisions_by_id[question["decision_id"]]
+                        decision_context.append(
+                            {
+                                "question_id": question["id"],
+                                "question": question["question"],
+                                "decision_id": decision["id"],
+                                "decision": decision["decision"],
+                                "impact": list(question["impact"]),
+                            }
+                        )
+            issues = [self._classify_health_issue(item) for item in issues]
+            can_advance = not any(item["blocking"] for item in issues)
             return {
                 "status": "ok" if not issues else "issues_found",
                 "workspace": str(self.store.root),
                 "project": project,
                 "state": state,
-                "next_action": self._next_action(state),
+                "can_advance": can_advance,
+                "next_action": (
+                    self._next_action(state) if can_advance else "resolve_health_issues"
+                ),
                 "counts": {
                     "prd_files": len(project["prd_files"]),
                     "requirements": len(documents["requirements.json"]["items"]),
+                    "accepted_requirements": sum(
+                        item["disposition"] == "accepted"
+                        for item in documents["requirements.json"]["items"]
+                    ),
+                    "not_accepted_requirements": sum(
+                        item["disposition"] in {"proposed", "deferred", "excluded"}
+                        for item in documents["requirements.json"]["items"]
+                    ),
+                    "withdrawn_requirements": sum(
+                        item["disposition"] == "withdrawn"
+                        for item in documents["requirements.json"]["items"]
+                    ),
                     "tasks": len(documents["tasks.json"]["items"]),
                     "artifacts": len(documents["artifacts.json"]["items"]),
                     "open_questions": len(open_questions),
                     "decisions": len(documents["decisions.json"]["items"]),
+                    "active_decisions": sum(
+                        item["status"] == "active"
+                        for item in documents["decisions.json"]["items"]
+                    ),
+                    "superseded_decisions": sum(
+                        item["status"] == "superseded"
+                        for item in documents["decisions.json"]["items"]
+                    ),
                     "memory_entries": sum(
                         item["status"] == "active" for item in documents["memory.json"]["items"]
                     ),
                 },
                 "pending_reviews": pending_review_items,
                 "blocking_questions": blocking_question_items,
+                "decision_context": decision_context,
                 "issues": issues,
             }
 
     def render(self) -> dict[str, Any]:
+        self.recover()
+        inspection = self.inspect()
         with self.store.lock(exclusive=True):
-            self._recover_and_sync_locked()
             documents = {
                 name: self.store.read_json(name)
                 for name in (
@@ -1158,14 +1614,7 @@ class WorkflowEngine:
                 )
             }
             artifact_bodies: dict[str, str] = {}
-            health_issues: list[dict[str, Any]] = []
             for artifact in documents["artifacts.json"]["items"]:
-                try:
-                    verify_artifact_integrity(self.store.root, artifact)
-                except AIWorkflowError as error:
-                    health_issues.append(
-                        {"type": error.code, "message": error.message}
-                    )
                 path = self.store.safe_path(artifact["path"])
                 try:
                     artifact_bodies[artifact["id"]] = path.read_text(encoding="utf-8")
@@ -1182,8 +1631,10 @@ class WorkflowEngine:
                 memory=documents["memory.json"],
                 events=self.store.read_events(),
                 artifact_bodies=artifact_bodies,
-                next_action=self._next_action(documents["state.json"]),
-                health_issues=health_issues,
+                next_action=inspection["next_action"],
+                can_advance=inspection["can_advance"],
+                decision_context=inspection["decision_context"],
+                health_issues=inspection["issues"],
             ).encode("utf-8")
             self.store.replace_generated_locked(DASHBOARD_FILENAME, content)
             return {
@@ -1197,16 +1648,74 @@ class WorkflowEngine:
             return "review"
         if state["mode"] == "blocked":
             return "decide"
+        if state["mode"] == "decision":
+            return "route_decision"
         if state["mode"] == "working":
             return "resume"
+        if state["current_stage"] == "specification":
+            task_plan = find_artifact(self.store.read_json("artifacts.json"), "task-plan")
+            if task_plan is None or task_plan["status"] != "approved":
+                return "plan_tasks"
+            return "generate_specification"
         return {
             "analysis": "analyze_requirements",
             "design": "design_solution",
-            "specification": "generate_specification",
             "implementation": "implement_code",
-            "testing": "generate_tests",
+            "testing": "write_unit_tests",
             "completed": "completed",
         }[state["current_stage"]]
+
+    def _classify_health_issue(self, issue: Mapping[str, Any]) -> dict[str, Any]:
+        recovery_actions = {
+            "generated_view_drift": "recover",
+            "artifact_drift": "resolve_drift",
+            "design_requirement_mismatch": "revise_design",
+            "task_reference_mismatch": "revise_task_plan",
+            "uncovered_requirements": "revise_task_plan",
+            "code_repository_unavailable": "restore_code_repository",
+            "prd_missing": "reinitialize_workspace",
+        }
+        issue_type = str(issue["type"])
+        if issue_type == "artifact_drift":
+            details = issue.get("details", {})
+            artifact_status = details.get("artifact_status")
+            drift_items = details.get("issues", [])
+            content_only = (
+                len(drift_items) == 1
+                and drift_items[0].get("component") == "content"
+                and drift_items[0].get("reason") in {"changed", "missing"}
+            )
+            allowed_outcomes = (
+                ["discard"]
+                if content_only
+                and (
+                    artifact_status == "stale"
+                    or drift_items[0].get("reason") == "missing"
+                )
+                else ["adopt", "discard"]
+                if content_only
+                else []
+            )
+            recovery_action = (
+                f"resolve_{artifact_status}_drift"
+                if allowed_outcomes
+                else "manual_repair_required"
+            )
+            return {
+                **issue,
+                "blocking": True,
+                "recoverable": bool(allowed_outcomes),
+                "allowed_outcomes": allowed_outcomes,
+                "recovery_action": recovery_action,
+            }
+        return {
+            **issue,
+            "blocking": issue.get("level") == "error",
+            "recovery_action": recovery_actions.get(
+                issue_type,
+                "manual_repair_required",
+            ),
+        }
 
     def _request_changes(
         self,
@@ -1216,21 +1725,59 @@ class WorkflowEngine:
         feedback: str,
         command_prefix: str,
         supersede_active_work: bool = False,
+        adopt_content_drift: bool = False,
+        decision_work_id: str | None = None,
+        upstream_work_id: str | None = None,
+        upstream_evidence: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
-        if not feedback.strip():
+        decision_route = command_prefix == "route-decision"
+        upstream_route = command_prefix == "route-upstream"
+        if not decision_route and not feedback.strip():
             raise AIWorkflowError(
                 code="invalid_feedback",
                 message="Change feedback cannot be empty.",
                 exit_code=4,
             )
-        command_key = f"{command_prefix}:{artifact_id}@{revision}:changes_requested"
-        digest_input: dict[str, Any] = {
-            "artifact_id": artifact_id,
-            "revision": revision,
-            "feedback": feedback,
-        }
-        if command_prefix == "revise":
+        if decision_route:
+            if decision_work_id is None:
+                raise AIWorkflowError(
+                    code="invalid_decision_route",
+                    message="Decision revision route requires a work id.",
+                    exit_code=2,
+                )
+            command_key = f"route-decision:{decision_work_id}"
+            digest_input: dict[str, Any] = {
+                "work_id": decision_work_id,
+                "outcome": "revise",
+                "artifact_id": artifact_id,
+                "revision": revision,
+            }
+        elif upstream_route:
+            if upstream_work_id is None:
+                raise AIWorkflowError(
+                    code="invalid_upstream_correction",
+                    message="Upstream correction route requires an active work id.",
+                    exit_code=2,
+                )
+            command_key = f"route-upstream:{upstream_work_id}"
+            digest_input = {
+                "work_id": upstream_work_id,
+                "artifact_id": artifact_id,
+                "revision": revision,
+                "correction": feedback,
+                "evidence": [dict(item) for item in upstream_evidence],
+            }
+        else:
+            command_key = f"{command_prefix}:{artifact_id}@{revision}:changes_requested"
+            digest_input = {
+                "artifact_id": artifact_id,
+                "revision": revision,
+                "feedback": feedback,
+            }
+        if command_prefix in {"revise", "resolve-drift"}:
             digest_input["supersede_active_work"] = supersede_active_work
+        if adopt_content_drift:
+            digest_input["adopt_content_drift"] = True
         request_digest = self._digest(digest_input)
         with self.store.lock(exclusive=True):
             self._recover_and_sync_locked()
@@ -1253,6 +1800,63 @@ class WorkflowEngine:
                     exit_code=4,
                     details={"artifact_id": artifact_id, "revision": revision},
                 )
+            resolved_decisions: list[dict[str, Any]] = []
+            decision_route_audit: dict[str, Any] = {}
+            effective_feedback = feedback
+            if decision_route:
+                self._validate_decision_state(state, decision_work_id)
+                resolved_decisions = self._resolved_decisions_for_work(decision_work_id)
+                decision_work = self._read_work(
+                    decision_work_id,
+                    expected_hash=state["active_work_sha256"],
+                )
+                decision_route_audit = self._validate_decision_revision_target(
+                    decision_work,
+                    artifact,
+                    resolved_decisions,
+                    artifacts,
+                )
+                effective_feedback = self._decision_feedback(resolved_decisions)
+            elif upstream_route:
+                if state["mode"] != "working" or state["active_work"] != upstream_work_id:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Only active semantic work can route a repository-backed upstream correction.",
+                        exit_code=6,
+                        details={"work_id": upstream_work_id, "mode": state["mode"]},
+                    )
+                active_work = self._read_work(
+                    upstream_work_id,
+                    expected_hash=state["active_work_sha256"],
+                )
+                target_ref = f"{artifact_id}@{revision}"
+                upstream = self._upstream_references(active_work, artifacts)
+                if target_ref not in upstream:
+                    raise AIWorkflowError(
+                        code="invalid_upstream_target",
+                        message="Factual correction target must be an approved upstream dependency of the active work.",
+                        exit_code=6,
+                        details={"target": target_ref, "upstream": sorted(upstream)},
+                    )
+                repository = active_work.get("repository_context")
+                if not isinstance(repository, dict):
+                    raise AIWorkflowError(
+                        code="repository_context_missing",
+                        message="Upstream factual correction requires repository context.",
+                        exit_code=6,
+                    )
+                validate_repository_evidence(repository["root"], upstream_evidence)
+                evidence_lines = [
+                    f"- {item['path']}#{item['symbol']}" for item in upstream_evidence
+                ]
+                effective_feedback = "\n".join(
+                    [
+                        "Correct the upstream factual error using verified repository evidence:",
+                        feedback.strip(),
+                        "Evidence:",
+                        *evidence_lines,
+                    ]
+                )
             if command_prefix == "review":
                 reviewed_ref = f"{artifact_id}@{revision}"
                 if artifact["status"] != "review" or reviewed_ref not in state["pending_reviews"]:
@@ -1262,6 +1866,28 @@ class WorkflowEngine:
                         exit_code=6,
                     )
                 self._reject_conflicting_review(artifact_id, revision, command_key)
+            elif adopt_content_drift and artifact["status"] == "review":
+                reviewed_ref = f"{artifact_id}@{revision}"
+                if state["mode"] != "review" or reviewed_ref not in state["pending_reviews"]:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Review artifact drift can only be adopted while that revision awaits review.",
+                        exit_code=6,
+                    )
+            elif adopt_content_drift and artifact["status"] == "changes_requested":
+                if state["mode"] not in {"working", "blocked", "decision"}:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Changed artifact drift requires its active successor work.",
+                        exit_code=6,
+                    )
+                if not supersede_active_work:
+                    raise AIWorkflowError(
+                        code="active_work_conflict",
+                        message="Adopting external content would replace unfinished revision work.",
+                        exit_code=6,
+                        details={"active_work": state["active_work"], "mode": state["mode"]},
+                    )
             else:
                 if artifact["status"] != "approved" or artifact["approved_revision"] != revision:
                     raise AIWorkflowError(
@@ -1282,18 +1908,53 @@ class WorkflowEngine:
                         exit_code=6,
                         details={"active_work": state["active_work"], "mode": state["mode"]},
                     )
-            verify_artifact_integrity(self.store.root, artifact)
+            adopted_draft: bytes | None = None
+            approved_snapshot: bytes | None = None
+            if adopt_content_drift:
+                issues = artifact_integrity_issues(self.store.root, artifact)
+                if not (
+                    len(issues) == 1
+                    and issues[0]["component"] == "content"
+                    and issues[0]["reason"] == "changed"
+                ):
+                    raise AIWorkflowError(
+                        code="artifact_drift_unrecoverable",
+                        message="Only isolated semantic artifact content drift can be adopted.",
+                        exit_code=7,
+                        details={"artifact_id": artifact_id, "issues": issues},
+                    )
+                adopted_draft = self.store.safe_path(artifact["path"]).read_bytes()
+                approved_snapshot = self.store.safe_path(artifact["snapshot_path"]).read_bytes()
+                if not adopted_draft.strip():
+                    raise AIWorkflowError(
+                        code="incomplete_work",
+                        message="External artifact content cannot be empty.",
+                        exit_code=4,
+                        details={"artifact_id": artifact_id},
+                    )
+            else:
+                verify_artifact_integrity(self.store.root, artifact)
             previous_work = self.store.read_json_path(artifact["work_path"])
             validate_work(previous_work)
             work_id = self._next_work_id()
             successor = copy_successor_work(
                 previous_work,
                 work_id=work_id,
-                feedback=feedback,
+                feedback=effective_feedback,
                 global_memory_sha256=sha256_content(
                     self.store.safe_path(".aiwf/memory.md").read_bytes()
                 ),
             )
+            successor = {
+                **successor,
+                "repository_context": inspect_repository(
+                    self.store.read_json("project.json")["code_repository"]
+                ),
+            }
+            validate_work(successor)
+            memory_delta_applied = artifact["approved_revision"] == artifact["revision"]
+            if memory_delta_applied:
+                successor = self._with_affected_memory(successor, artifact)
             updated_artifact = {**artifact, "status": "changes_requested", "updated_at": now_iso()}
             artifacts = replace_artifact(artifacts, updated_artifact)
             updated_state = dict(state)
@@ -1313,12 +1974,25 @@ class WorkflowEngine:
                 ".aiwf/artifacts.json": json_bytes(artifacts),
                 ".aiwf/state.json": json_bytes(updated_state),
                 self._work_path(work_id, "work.json"): json_bytes(successor),
-                successor["draft_output"]: self.store.safe_path(artifact["path"]).read_bytes(),
-                successor["result_output"]: self._editable_result_bytes(artifact),
+                successor["draft_output"]: (
+                    adopted_draft
+                    if adopted_draft is not None
+                    else self.store.safe_path(artifact["path"]).read_bytes()
+                ),
+                successor["result_output"]: self._editable_result_bytes(
+                    artifact,
+                    preserve_memory_delta=not memory_delta_applied,
+                ),
             }
+            if approved_snapshot is not None:
+                changes[artifact["path"]] = approved_snapshot
             additional_events: list[tuple[str, Mapping[str, Any]]] = []
             superseded_work_id: str | None = None
-            if command_prefix == "revise" and state["mode"] in {"working", "blocked"}:
+            if command_prefix in {"revise", "resolve-drift", "route-decision", "route-upstream"} and state["mode"] in {
+                "working",
+                "blocked",
+                "decision",
+            }:
                 superseded_work_id = state["active_work"]
                 previous_active = self._read_work(
                     superseded_work_id,
@@ -1351,14 +2025,254 @@ class WorkflowEngine:
                         {"work_id": superseded_work_id, "replaced_by": work_id},
                     )
                 )
-            event = self.store.commit_locked(
-                changes,
-                event_type="changes_requested",
-                event_data={
+            if adopt_content_drift:
+                additional_events.append(
+                    (
+                        "artifact_drift_resolved",
+                        {
+                            "artifact_id": artifact_id,
+                            "revision": revision,
+                            "outcome": "adopt",
+                            "artifact_status": artifact["status"],
+                            "work_id": work_id,
+                        },
+                    )
+                )
+            if decision_route or upstream_route:
+                additional_events.append(
+                    (
+                        "changes_requested",
+                        {
+                            "artifact_id": artifact_id,
+                            "revision": revision,
+                            "work_id": work_id,
+                            "feedback": effective_feedback,
+                            "adopted_content_drift": False,
+                        },
+                    )
+                )
+            event_type = (
+                "decision_route_selected"
+                if decision_route
+                else "upstream_correction_routed"
+                if upstream_route
+                else "changes_requested"
+            )
+            event_data = (
+                {
+                    "work_id": decision_work_id,
+                    "outcome": "revise",
+                    "decision_ids": [
+                        item["decision"]["id"] for item in resolved_decisions
+                    ],
+                    "artifact_id": artifact_id,
+                    "revision": revision,
+                    "successor_work_id": work_id,
+                    **decision_route_audit,
+                }
+                if decision_route
+                else {
+                    "work_id": upstream_work_id,
+                    "artifact_id": artifact_id,
+                    "revision": revision,
+                    "successor_work_id": work_id,
+                    "correction": feedback.strip(),
+                    "evidence": [dict(item) for item in upstream_evidence],
+                }
+                if upstream_route
+                else {
                     "artifact_id": artifact_id,
                     "revision": revision,
                     "work_id": work_id,
-                    "feedback": feedback,
+                    "feedback": effective_feedback,
+                    "adopted_content_drift": adopt_content_drift,
+                }
+            )
+            event = self.store.commit_locked(
+                changes,
+                event_type=event_type,
+                event_data=event_data,
+                command_key=command_key,
+                request_digest=request_digest,
+                additional_events=additional_events,
+            )
+            if superseded_work_id is not None:
+                shutil.rmtree(
+                    self.store.data_root / "work" / superseded_work_id,
+                    ignore_errors=True,
+                )
+            return dict(event["data"])
+
+    def _discard_artifact_drift(
+        self,
+        artifact_id: str,
+        revision: int,
+        *,
+        supersede_active_work: bool,
+    ) -> dict[str, Any]:
+        command_key_base = f"resolve-drift:{artifact_id}@{revision}:discard"
+        request_digest = self._digest(
+            {
+                "artifact_id": artifact_id,
+                "revision": revision,
+                "outcome": "discard",
+                "supersede_active_work": supersede_active_work,
+            }
+        )
+        with self.store.lock(exclusive=True):
+            self._recover_and_sync_locked()
+            state = self.store.read_json("state.json")
+            artifact = find_artifact(self.store.read_json("artifacts.json"), artifact_id)
+            if artifact is None or artifact["revision"] != revision:
+                raise AIWorkflowError(
+                    code="invalid_state_transition",
+                    message="Only the current artifact revision can resolve drift.",
+                    exit_code=6,
+                    details={"artifact_id": artifact_id, "revision": revision},
+                )
+            artifact_status = artifact["status"]
+            if artifact_status == "review":
+                reviewed_ref = f"{artifact_id}@{revision}"
+                if state["mode"] != "review" or reviewed_ref not in state["pending_reviews"]:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Review artifact drift can only be discarded while awaiting review.",
+                        exit_code=6,
+                    )
+            elif artifact_status == "approved":
+                if artifact["approved_revision"] != revision:
+                    raise AIWorkflowError(
+                        code="invalid_state_transition",
+                        message="Only the current approved revision can resolve approved artifact drift.",
+                        exit_code=6,
+                    )
+                if state["mode"] == "review":
+                    raise AIWorkflowError(
+                        code="active_review_conflict",
+                        message="Resolve the pending artifact review before resolving another artifact.",
+                        exit_code=6,
+                    )
+                if state["mode"] != "ready" and not supersede_active_work:
+                    raise AIWorkflowError(
+                        code="active_work_conflict",
+                        message="Drift resolution would replace unfinished work; explicit confirmation is required.",
+                        exit_code=6,
+                        details={"active_work": state["active_work"], "mode": state["mode"]},
+                    )
+            elif artifact_status not in {"changes_requested", "stale"}:
+                raise AIWorkflowError(
+                    code="invalid_state_transition",
+                    message="Artifact status cannot resolve content drift.",
+                    exit_code=6,
+                    details={"artifact_status": artifact_status},
+                )
+
+            issues = artifact_integrity_issues(self.store.root, artifact)
+            prior_events = [
+                event
+                for event in self.store.read_events()
+                if event["type"] == "artifact_drift_resolved"
+                and event["data"].get("artifact_id") == artifact_id
+                and event["data"].get("revision") == revision
+                and event["data"].get("outcome") == "discard"
+            ]
+            if not issues and prior_events:
+                existing_event = prior_events[-1]
+                if existing_event["request_digest"] != request_digest:
+                    raise AIWorkflowError(
+                        code="idempotency_conflict",
+                        message="Drift resolution changed for an existing request.",
+                        exit_code=6,
+                    )
+                return dict(existing_event["data"])
+            if not (
+                len(issues) == 1
+                and issues[0]["component"] == "content"
+                and issues[0]["reason"] in {"changed", "missing"}
+            ):
+                raise AIWorkflowError(
+                    code="artifact_drift_unrecoverable",
+                    message="Only isolated artifact content drift can be discarded.",
+                    exit_code=7,
+                    details={"artifact_id": artifact_id, "issues": issues},
+                )
+            command_key = (
+                command_key_base
+                if not prior_events
+                else f"{command_key_base}:{len(prior_events) + 1}"
+            )
+            external_content = (
+                self.store.safe_path(artifact["path"]).read_bytes()
+                if issues[0]["reason"] == "changed"
+                else None
+            )
+            recorded_snapshot = self.store.safe_path(artifact["snapshot_path"]).read_bytes()
+            changes: dict[str, bytes | None] = {artifact["path"]: recorded_snapshot}
+            additional_events: list[tuple[str, Mapping[str, Any]]] = []
+            superseded_work_id: str | None = None
+            if artifact_status == "approved" and state["mode"] in {
+                "working",
+                "blocked",
+                "decision",
+            }:
+                superseded_work_id = state["active_work"]
+                previous_active = self._read_work(
+                    superseded_work_id,
+                    expected_hash=state["active_work_sha256"],
+                )
+                abandoned = {**previous_active, "status": "abandoned"}
+                archive_root = f".aiwf/history/abandoned/{superseded_work_id}"
+                changes[f"{archive_root}/work.json"] = json_bytes(abandoned)
+                for source_name, filename in (
+                    (previous_active["draft_output"], "artifact.md"),
+                    (previous_active["result_output"], "result.json"),
+                ):
+                    source_path = self.store.safe_path(source_name)
+                    if source_path.is_file():
+                        changes[f"{archive_root}/{filename}"] = source_path.read_bytes()
+                if state["mode"] == "blocked":
+                    questions = self.store.read_json("questions.json")
+                    blocking = set(state["blocking_questions"])
+                    changes[".aiwf/questions.json"] = json_bytes(
+                        {
+                            "schema_version": SCHEMA_VERSION,
+                            "items": [
+                                {**item, "status": "superseded"}
+                                if item["id"] in blocking and item["status"] == "open"
+                                else item
+                                for item in questions["items"]
+                            ],
+                        }
+                    )
+                updated_state = {
+                    **state,
+                    "mode": "ready",
+                    "active_item": None,
+                    "active_work": None,
+                    "active_work_sha256": None,
+                    "blocking_questions": [],
+                    "updated_at": now_iso(),
+                }
+                changes[".aiwf/state.json"] = json_bytes(updated_state)
+                additional_events.append(
+                    (
+                        "work_superseded",
+                        {"work_id": superseded_work_id, "replaced_by": None},
+                    )
+                )
+
+            event = self.store.commit_locked(
+                changes,
+                event_type="artifact_drift_resolved",
+                event_data={
+                    "artifact_id": artifact_id,
+                    "revision": revision,
+                    "outcome": "discard",
+                    "artifact_status": artifact_status,
+                    "external_content_sha256": (
+                        sha256_content(external_content) if external_content is not None else None
+                    ),
+                    "restored_content_sha256": sha256_content(recorded_snapshot),
                 },
                 command_key=command_key,
                 request_digest=request_digest,
@@ -1439,7 +2353,7 @@ class WorkflowEngine:
             return
         tasks = self.store.read_json("tasks.json")
         task = next((item for item in tasks["items"] if item["id"] == active_item), None)
-        if task is None or task["status"] in {"deferred", "withdrawn"}:
+        if task is None or task["status"] == "withdrawn":
             raise AIWorkflowError(
                 code="unknown_task_id",
                 message="Active item is not an available task.",
@@ -1490,13 +2404,17 @@ class WorkflowEngine:
         tasks: dict[str, Any],
         invalidated: Sequence[str],
         source_stage: str,
+        *,
+        active_item: str | None,
     ) -> dict[str, Any]:
         items = [dict(item) for item in tasks["items"]]
-        if source_stage == "analysis" and invalidated:
+        if source_stage in {"analysis", "design"} and invalidated:
             for item in items:
-                if item["status"] not in {"deferred", "withdrawn"}:
+                if item["status"] != "withdrawn":
                     item["status"] = "stale"
-        elif source_stage != "design":
+        elif source_stage == "specification" and active_item is None:
+            pass
+        else:
             affected_ids = {
                 "-".join(artifact_id.split("-")[:2]) for artifact_id in invalidated
             }
@@ -1527,7 +2445,39 @@ class WorkflowEngine:
                 exit_code=4,
             )
         normalized["impact"] = list(impact)
+        supersedes = raw_question.get("supersedes_decisions", [])
+        if not isinstance(supersedes, list) or any(
+            not isinstance(item, str) or not item for item in supersedes
+        ):
+            raise AIWorkflowError(
+                code="invalid_questions",
+                message="Question supersedes_decisions must be an array of decision ids.",
+                exit_code=4,
+            )
+        normalized["supersedes_decisions"] = list(supersedes)
         return normalized
+
+    def _archived_work_ids(self, artifacts: Mapping[str, Any]) -> set[str]:
+        work_ids: set[str] = set()
+        work_paths = [artifact["work_path"] for artifact in artifacts["items"]]
+        history = self.store.data_root / "history"
+        if history.is_dir():
+            work_paths.extend(
+                str(path.relative_to(self.store.root))
+                for path in history.rglob("*.work.json")
+            )
+        for work_path in set(work_paths):
+            try:
+                snapshot = self.store.read_json_path(work_path)
+            except AIWorkflowError:
+                continue
+            work_id = snapshot.get("work_id")
+            if isinstance(work_id, str):
+                work_ids.add(work_id)
+        abandoned = self.store.data_root / "history" / "abandoned"
+        if abandoned.is_dir():
+            work_ids.update(path.name for path in abandoned.iterdir() if path.is_dir())
+        return work_ids
 
     def _reject_conflicting_review(
         self,
@@ -1549,12 +2499,40 @@ class WorkflowEngine:
     def _work_path(self, work_id: str, filename: str) -> str:
         return f".aiwf/work/{work_id}/{filename}"
 
-    def _editable_result_bytes(self, artifact: Mapping[str, Any]) -> bytes:
+    def _editable_result_bytes(
+        self,
+        artifact: Mapping[str, Any],
+        *,
+        preserve_memory_delta: bool,
+    ) -> bytes:
         result = self.store.read_json_path(artifact["result_path"])
-        editable_fields = set(result_schema(artifact["stage"])["properties"])
         return json_bytes(
-            {key: value for key, value in result.items() if key in editable_fields}
+            result_seed_from_record(
+                artifact["stage"],
+                result,
+                preserve_memory_delta=preserve_memory_delta,
+                active_item=artifact["active_item"],
+            )
         )
+
+    def _with_affected_memory(
+        self,
+        work: dict[str, Any],
+        artifact: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        affected = [
+            dict(item)
+            for item in self.store.read_json("memory.json")["items"]
+            if item["status"] == "active"
+            and item["source"].rsplit("@", 1)[0] == artifact["id"]
+        ]
+        if not affected:
+            return work
+        facts = dict(work.get("facts", {}))
+        facts["affected_memory"] = affected
+        updated = {**work, "facts": facts}
+        validate_work(updated)
+        return updated
 
     def _digest(self, value: Any) -> str:
         return sha256_bytes(
@@ -1573,7 +2551,7 @@ def execute(request: CommandRequest) -> dict[str, Any]:
                 name=request.options.get("name", request.workspace.name),
                 platform=request.options["platform"],
                 prd_paths=request.options["prd"],
-                code_repository=request.options.get("code_repository"),
+                code_repository=request.options["code_repository"],
                 project_id=request.options.get("project_id"),
             ),
         )
@@ -1582,6 +2560,7 @@ def execute(request: CommandRequest) -> dict[str, Any]:
     if request.command == "status":
         return engine.inspect()
     if request.command == "prepare":
+        _assert_can_advance(engine)
         return _with_dashboard(
             engine,
             engine.prepare_work(
@@ -1590,8 +2569,11 @@ def execute(request: CommandRequest) -> dict[str, Any]:
             ),
         )
     if request.command == "submit":
+        _assert_can_advance(engine)
         return _with_dashboard(engine, engine.submit_work(request.options["work_id"]))
     if request.command == "review":
+        if request.options["outcome"] == "approved":
+            _assert_can_advance(engine)
         return _with_dashboard(
             engine,
             engine.review_artifact(
@@ -1608,6 +2590,17 @@ def execute(request: CommandRequest) -> dict[str, Any]:
                 request.options["artifact_id"],
                 request.options["revision"],
                 feedback=request.options["feedback"],
+                supersede_active_work=bool(request.options.get("supersede_active_work")),
+            ),
+        )
+    if request.command == "resolve-drift":
+        return _with_dashboard(
+            engine,
+            engine.resolve_artifact_drift(
+                request.options["artifact_id"],
+                request.options["revision"],
+                outcome=request.options["outcome"],
+                feedback=request.options.get("feedback", ""),
                 supersede_active_work=bool(request.options.get("supersede_active_work")),
             ),
         )
@@ -1635,20 +2628,61 @@ def execute(request: CommandRequest) -> dict[str, Any]:
             engine,
             engine.decide(request.options["question_id"], request.options["decision"]),
         )
+    if request.command == "route-decision":
+        if request.options["outcome"] == "resume":
+            _assert_can_advance(engine)
+        return _with_dashboard(
+            engine,
+            engine.route_decision(
+                request.options["work_id"],
+                outcome=request.options["outcome"],
+                artifact_id=request.options.get("artifact_id"),
+                revision=request.options.get("revision"),
+            ),
+        )
+    if request.command == "route-upstream":
+        try:
+            raw_evidence = json.loads(request.options["evidence_json"])
+        except (TypeError, json.JSONDecodeError) as error:
+            raise AIWorkflowError(
+                code="invalid_upstream_evidence",
+                message="Upstream evidence must be a valid JSON array.",
+                exit_code=2,
+            ) from error
+        evidence = require_evidence_list(
+            raw_evidence,
+            "route-upstream evidence",
+            "evidence",
+        )
+        return _with_dashboard(
+            engine,
+            engine.route_upstream(
+                request.options["work_id"],
+                artifact_id=request.options["artifact_id"],
+                revision=request.options["revision"],
+                correction=request.options["correction"],
+                evidence=evidence,
+            ),
+        )
     if request.command == "render":
         return engine.render()
-    if request.command == "migrate":
-        result = engine.migrate(apply=bool(request.options.get("apply")))
-        return _with_dashboard(engine, result) if result["status"] == "migrated" else result
     raise AIWorkflowError(
         code="command_not_implemented",
-        message=f"Command '{request.command}' is not connected before its implementation phase.",
+        message=f"Command '{request.command}' is not implemented.",
         exit_code=3,
-        details={
-            "command": request.command,
-            "phase": 7,
-            "workspace": str(request.workspace),
-        },
+        details={"command": request.command, "workspace": str(request.workspace)},
+    )
+
+
+def _assert_can_advance(engine: WorkflowEngine) -> None:
+    inspection = engine.inspect()
+    if inspection.get("can_advance") is True:
+        return
+    raise AIWorkflowError(
+        code="workspace_health_blocked",
+        message="Resolve blocking workspace health issues before advancing the workflow.",
+        exit_code=7,
+        details={"issues": inspection.get("issues", [])},
     )
 
 

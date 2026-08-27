@@ -16,6 +16,9 @@ def initialize_workspace(root: Path, *, repository: Path | None = None) -> Path:
         "# Drafts\n\nSigned-in users can save a draft and continue later.\n",
         encoding="utf-8",
     )
+    if repository is None:
+        repository = root / "repository"
+        repository.mkdir()
     arguments = [
         "init",
         "--workspace",
@@ -26,9 +29,9 @@ def initialize_workspace(root: Path, *, repository: Path | None = None) -> Path:
         "web",
         "--prd",
         str(prd),
+        "--code-repository",
+        str(repository),
     ]
-    if repository is not None:
-        arguments.extend(("--code-repository", str(repository)))
     completed = run_cli(arguments)
     if completed.returncode != 0:
         raise AssertionError(completed.stderr)
@@ -36,9 +39,74 @@ def initialize_workspace(root: Path, *, repository: Path | None = None) -> Path:
 
 
 class AnalysisCommandLineTests(unittest.TestCase):
+    def test_fully_filtered_prd_completes_without_forcing_design_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = initialize_workspace(root)
+            work = json.loads(
+                run_cli(["prepare", "--workspace", str(workspace)]).stdout
+            )["result"]
+            (workspace / work["draft_output"]).write_text(
+                "# 需求分析\n\n该 PRD 仅描述原生端已有能力，Web 端无需实施。\n",
+                encoding="utf-8",
+            )
+            (workspace / work["result_output"]).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 8,
+                        "stage": "analysis",
+                        "target_platform": "web",
+                        "requirements": [
+                            {
+                                "title": "原生端草稿恢复",
+                                "summary": "现有原生端已经完整支持草稿恢复。",
+                                "sources": [
+                                    {"kind": "prd", "ref": "prd/requirements.md"},
+                                ],
+                                "platform_scope": "other",
+                                "change_type": "reuse",
+                                "scope_reason": "该能力不属于 Web 端且无需 Web 改动。",
+                                "disposition": "excluded",
+                            }
+                        ],
+                        "memory_delta": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            submitted = run_cli(
+                ["submit", "--workspace", str(workspace), "--work-id", work["work_id"]]
+            )
+            self.assertEqual(submitted.returncode, 0, submitted.stderr)
+            reviewed = run_cli(
+                [
+                    "review",
+                    "--workspace",
+                    str(workspace),
+                    "--artifact-id",
+                    "analysis",
+                    "--revision",
+                    "1",
+                    "--outcome",
+                    "approved",
+                ]
+            )
+
+            self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+            result = json.loads(reviewed.stdout)["result"]
+            self.assertEqual(result["current_stage"], "completed")
+            status = json.loads(
+                run_cli(["status", "--workspace", str(workspace)]).stdout
+            )["result"]
+            self.assertEqual(status["next_action"], "completed")
+
     def test_prepare_submit_and_review_analysis_across_processes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            workspace = initialize_workspace(Path(directory))
+            root = Path(directory)
+            repository = root / "repository"
+            repository.mkdir()
+            workspace = initialize_workspace(root, repository=repository)
 
             prepared = run_cli(
                 [
@@ -55,23 +123,28 @@ class AnalysisCommandLineTests(unittest.TestCase):
             self.assertEqual(json.loads(repeated.stdout)["result"], work)
 
             self.assertEqual(work["stage"], "analysis")
+            self.assertEqual(work["target_platform"], "web")
+            self.assertEqual(work["facts"], {})
+            self.assertNotIn("decisions", work)
             self.assertEqual(work["stage_guide"], "references/stages/analysis.md")
             self.assertEqual(work["stage_guide_base"], "wf_skill")
             self.assertIn("prd/requirements.md", work["inputs"])
             self.assertIn(".aiwf/project.json", work["inputs"])
-            self.assertIn(".aiwf/requirements.json", work["inputs"])
+            self.assertNotIn(".aiwf/requirements.json", work["inputs"])
+            self.assertIn("repository_context", work)
             self.assertIn("重点识别离线编辑约束", work["goal"])
+            self.assertEqual(work["feedback"], "重点识别离线编辑约束")
             guide = SOURCE_ROOT / "wf" / work["stage_guide"]
             self.assertTrue(guide.is_file())
-            result_template = json.loads(
+            result_seed = json.loads(
                 (workspace / work["result_output"]).read_text(encoding="utf-8")
             )
-            self.assertEqual(result_template, work["result_template"])
+            self.assertEqual(result_seed, work["result_seed"])
             requirement_schema = work["result_schema"]["properties"]["requirements"]
             self.assertIn("title", requirement_schema["items"]["required"])
             self.assertEqual(
                 requirement_schema["items"]["properties"]["disposition"]["enum"],
-                ["proposed", "deferred"],
+                ["proposed", "deferred", "excluded"],
             )
             serialized = json.dumps(work, ensure_ascii=False)
             for framework_term in ("事务清单", "事件追加", "状态迁移", "dashboard"):
@@ -82,21 +155,28 @@ class AnalysisCommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             result = {
-                "schema_version": 1,
+                "schema_version": 8,
                 "stage": "analysis",
+                "target_platform": "web",
                 "requirements": [
                     {
                         "title": "保存并继续草稿",
                         "summary": "登录用户可以保存草稿并稍后继续编辑。",
-                        "sources": ["prd/requirements.md"],
+                        "sources": [{"kind": "prd", "ref": "prd/requirements.md"}],
+                        "platform_scope": "target",
+                        "change_type": "new",
+                        "scope_reason": "该能力由 Web 端实现。",
                         "disposition": "proposed",
                     }
                 ],
                 "memory_delta": [
                     {
                         "operation": "add",
-                        "type": "business_requirement",
+                        "type": "architecture_decision",
                         "content": "登录用户可以保存草稿并稍后继续编辑。",
+                        "evidence": [],
+                        "rationale": "由需求分析确认。",
+                        "validation": None,
                     }
                 ],
             }
@@ -182,7 +262,29 @@ class AnalysisCommandLineTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(decided.returncode, 0, decided.stderr)
-            successor = json.loads(decided.stdout)["result"]["successor_work_id"]
+            decision_result = json.loads(decided.stdout)["result"]
+            self.assertTrue(decision_result["routing_required"])
+            status = json.loads(
+                run_cli(["status", "--workspace", str(workspace)]).stdout
+            )["result"]
+            self.assertEqual(status["next_action"], "route_decision")
+            self.assertEqual(
+                status["decision_context"][0]["decision"],
+                "首版只支持同设备保存，不做跨设备同步。",
+            )
+            routed = run_cli(
+                [
+                    "route-decision",
+                    "--workspace",
+                    str(workspace),
+                    "--work-id",
+                    work["work_id"],
+                    "--outcome",
+                    "resume",
+                ]
+            )
+            self.assertEqual(routed.returncode, 0, routed.stderr)
+            successor = json.loads(routed.stdout)["result"]["successor_work_id"]
             resumed = json.loads(
                 run_cli(["prepare", "--workspace", str(workspace)]).stdout
             )["result"]

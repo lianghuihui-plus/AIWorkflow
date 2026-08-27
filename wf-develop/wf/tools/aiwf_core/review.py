@@ -7,8 +7,6 @@ from typing import Any
 from .artifacts import find_artifact
 from .model import AIWorkflowError, SCHEMA_VERSION, next_id, now_iso
 
-REVIEW_OUTCOMES = ("approved", "changes_requested")
-
 
 def apply_memory_delta(
     memory: dict[str, Any],
@@ -31,6 +29,9 @@ def apply_memory_delta(
                 "id": target_id,
                 "type": operation["type"],
                 "content": operation["content"],
+                "evidence": list(operation["evidence"]),
+                "rationale": operation["rationale"],
+                "validation": operation["validation"],
                 "source": source,
                 "status": "active",
                 "updated_at": timestamp,
@@ -58,6 +59,9 @@ def apply_memory_delta(
                 {
                     "type": operation["type"],
                     "content": operation["content"],
+                    "evidence": list(operation["evidence"]),
+                    "rationale": operation["rationale"],
+                    "validation": operation["validation"],
                     "source": source,
                     "status": "active",
                     "updated_at": timestamp,
@@ -86,22 +90,10 @@ def approve_indexes(
     requirement_items = [dict(item) for item in requirements["items"]]
     task_items = [dict(item) for item in tasks["items"]]
     if stage == "analysis":
-        unresolved = [
-            item["id"]
-            for item in requirement_items
-            if item["disposition"] == "needs_decision"
-        ]
-        if unresolved:
-            raise AIWorkflowError(
-                code="unresolved_requirements",
-                message="Requirement analysis contains unresolved decisions.",
-                exit_code=6,
-                details={"ids": unresolved},
-            )
         for item in requirement_items:
             if item["origin_revision"] == revision and item["disposition"] == "proposed":
                 item["disposition"] = "accepted"
-    elif stage == "design":
+    elif stage == "specification" and active_item is None:
         for item in task_items:
             if item["origin_revision"] == revision and item["status"] == "proposed":
                 item["status"] = "planned"
@@ -129,6 +121,7 @@ def approve_indexes(
 def advance_after_approval(
     state: dict[str, Any],
     artifacts: dict[str, Any],
+    requirements: dict[str, Any],
     tasks: dict[str, Any],
     *,
     stage: str,
@@ -150,11 +143,18 @@ def advance_after_approval(
 
     next_stage = stage
     if stage == "analysis":
-        next_stage = "design"
+        next_stage = (
+            "design"
+            if any(item["disposition"] == "accepted" for item in requirements["items"])
+            else "completed"
+        )
     elif stage == "design":
         next_stage = "specification"
-    elif stage == "specification" and _all_task_artifacts_approved(tasks, artifacts, "specification"):
-        next_stage = "implementation"
+    elif stage == "specification":
+        if reviewed_ref.startswith("task-plan@"):
+            next_stage = "specification"
+        elif _all_task_artifacts_approved(tasks, artifacts, "specification"):
+            next_stage = "implementation"
     elif stage == "implementation" and _all_task_artifacts_approved(tasks, artifacts, "implementation"):
         next_stage = "testing"
     elif stage == "testing" and _all_task_artifacts_approved(tasks, artifacts, "testing"):
@@ -177,9 +177,7 @@ def _all_task_artifacts_approved(
         "implementation": "-implementation",
         "testing": "-test",
     }
-    eligible = [
-        item for item in tasks["items"] if item["status"] not in {"deferred", "withdrawn"}
-    ]
+    eligible = [item for item in tasks["items"] if item["status"] != "withdrawn"]
     if not eligible:
         return False
     suffix = suffix_by_stage[stage]

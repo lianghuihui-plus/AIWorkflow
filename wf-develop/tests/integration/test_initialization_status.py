@@ -87,6 +87,8 @@ class InitializationTests(unittest.TestCase):
                     "web",
                     "--prd",
                     str(prd_directory),
+                    "--code-repository",
+                    str(root),
                 ]
             )
 
@@ -121,6 +123,8 @@ class InitializationTests(unittest.TestCase):
                     str(first),
                     "--prd",
                     str(second),
+                    "--code-repository",
+                    str(root),
                 ]
             )
 
@@ -148,12 +152,38 @@ class InitializationTests(unittest.TestCase):
                     "web",
                     "--prd",
                     str(prd),
+                    "--code-repository",
+                    str(root),
                 ]
             )
 
             self.assertEqual(completed.returncode, 5)
             self.assertEqual(json.loads(completed.stderr)["error"]["code"], "workspace_not_empty")
             self.assertEqual(workspace_snapshot(workspace), before)
+
+    def test_code_repository_argument_is_required_before_workspace_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            prd = root / "requirements.md"
+            prd.write_text("requirements", encoding="utf-8")
+
+            completed = run_cli(
+                [
+                    "init",
+                    "--workspace",
+                    str(workspace),
+                    "--platform",
+                    "web",
+                    "--prd",
+                    str(prd),
+                ]
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(json.loads(completed.stderr)["error"]["code"], "invalid_arguments")
+            self.assertEqual(list(workspace.iterdir()), [])
 
     def test_invalid_code_repositories_are_rejected_without_workspace_writes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -211,6 +241,43 @@ class StatusTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(workspace_snapshot(workspace), before)
+
+    def test_unavailable_code_repository_is_a_blocking_health_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            repository = root / "repository"
+            repository.mkdir()
+            prd = root / "requirements.md"
+            prd.write_text("requirements", encoding="utf-8")
+            completed = run_cli(
+                [
+                    "init",
+                    "--workspace",
+                    str(workspace),
+                    "--platform",
+                    "web",
+                    "--prd",
+                    str(prd),
+                    "--code-repository",
+                    str(repository),
+                ]
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            repository.rmdir()
+
+            status = json.loads(
+                run_cli(["status", "--workspace", str(workspace)]).stdout
+            )["result"]
+
+            self.assertFalse(status["can_advance"])
+            self.assertEqual(status["next_action"], "resolve_health_issues")
+            issue = next(
+                item for item in status["issues"] if item["type"] == "code_repository_unavailable"
+            )
+            self.assertTrue(issue["blocking"])
+            self.assertEqual(issue["recovery_action"], "restore_code_repository")
 
     def test_status_reports_pending_recovery_without_recovering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

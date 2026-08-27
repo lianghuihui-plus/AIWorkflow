@@ -33,15 +33,21 @@ def run_cli(
 
 
 def bootstrap_engine(workspace: Path) -> WorkflowEngine:
+    repository = workspace.parent / f"{workspace.name}-repository"
+    repository.mkdir()
+    (repository / "app.txt").write_text("ApplicationRoot\n", encoding="utf-8")
     engine = WorkflowEngine(workspace)
     engine.bootstrap(
         {
             "project_id": "test-project",
             "name": "Test Project",
             "platform": "test",
-            "code_repository": None,
+            "code_repository": str(repository),
             "prd_files": [],
         }
+    )
+    (workspace / "prd" / "requirements.md").write_text(
+        "# Requirements\n\nSave drafts.\n", encoding="utf-8"
     )
     return engine
 

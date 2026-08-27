@@ -1,1 +1,0 @@
-Minimal repository fixture for workflow scenario tests.

@@ -9,7 +9,12 @@ from pathlib import Path
 from support import SOURCE_ROOT
 
 from integration.test_analysis_cli import initialize_workspace
-from integration.test_design_specification_cli import approve_analysis, run_success, write_outputs
+from integration.test_design_specification_cli import (
+    approve_analysis,
+    approve_task_plan,
+    run_success,
+    write_outputs,
+)
 
 
 def initialize_git_repository(root: Path) -> tuple[Path, str]:
@@ -41,15 +46,13 @@ def advance_single_task_to_implementation(workspace: Path) -> None:
         design,
         markdown="# Design\n\nPersist drafts in the editor repository.\n",
         result={
-            "schema_version": 1,
+            "schema_version": 8,
             "stage": "design",
-            "tasks": [
-                {
-                    "key": "draft-storage",
-                    "title": "Persist and resume drafts",
-                    "requirements": ["REQ-001"],
-                    "depends_on": [],
-                }
+            "requirements": ["REQ-001"],
+            "design_mode": "anchored",
+            "greenfield_reason": None,
+            "code_evidence": [
+                {"path": "src/app.txt", "symbol": "initial", "purpose": "Application integration root"}
             ],
             "memory_delta": [],
         },
@@ -68,13 +71,24 @@ def advance_single_task_to_implementation(workspace: Path) -> None:
             "approved",
         ]
     )
+    approve_task_plan(
+        workspace,
+        [
+            {
+                "key": "draft-storage",
+                "title": "Persist and resume drafts",
+                "requirements": ["REQ-001"],
+                "depends_on": [],
+            }
+        ],
+    )
     specification = run_success(["prepare", "--workspace", str(workspace)])
     write_outputs(
         workspace,
         specification,
         markdown="# T-001 Specification\n\nPersist and restore draft content.\n",
         result={
-            "schema_version": 1,
+            "schema_version": 8,
             "stage": "specification",
             "task_id": "T-001",
             "memory_delta": [],
@@ -129,7 +143,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                 implementation,
                 markdown="# Implementation\n\nAdded draft persistence.\n",
                 result={
-                    "schema_version": 1,
+                    "schema_version": 8,
                     "stage": "implementation",
                     "task_id": "T-001",
                     "changed_files": ["src/app.txt"],
@@ -137,7 +151,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                     "memory_delta": [],
                 },
             )
-            run_success(
+            submitted_implementation = run_success(
                 [
                     "submit",
                     "--workspace",
@@ -145,6 +159,21 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                     "--work-id",
                     str(implementation["work_id"]),
                 ]
+            )
+            artifacts = json.loads(
+                (workspace / ".aiwf/artifacts.json").read_text(encoding="utf-8")
+            )
+            implementation_artifact = next(
+                item
+                for item in artifacts["items"]
+                if item["id"] == submitted_implementation["artifact_id"]
+            )
+            implementation_result = json.loads(
+                (workspace / implementation_artifact["result_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                implementation_result["repository_verification"],
+                {"level": "git_delta", "observed_files": ["src/app.txt"]},
             )
             run_success(
                 [
@@ -175,7 +204,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                 testing,
                 markdown="# Tests\n\nDraft persistence behavior passed.\n",
                 result={
-                    "schema_version": 1,
+                    "schema_version": 8,
                     "stage": "testing",
                     "task_id": "T-001",
                     "test_files": ["tests/test_drafts.txt"],
@@ -208,6 +237,48 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
             status = run_success(["status", "--workspace", str(workspace)])
             self.assertEqual(status["next_action"], "completed")
             self.assertEqual(status["state"]["current_stage"], "completed")
+
+    def test_implementation_submission_rejects_a_false_file_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository, _ = initialize_git_repository(root)
+            workspace = initialize_workspace(root, repository=repository)
+            advance_single_task_to_implementation(workspace)
+            implementation = run_success(["prepare", "--workspace", str(workspace)])
+            (repository / "src/app.txt").write_text("changed without reporting\n", encoding="utf-8")
+            write_outputs(
+                workspace,
+                implementation,
+                markdown="# Implementation\n\nChanged the application.\n",
+                result={
+                    "schema_version": 8,
+                    "stage": "implementation",
+                    "task_id": "T-001",
+                    "changed_files": [],
+                    "validation_summary": "Checked locally.",
+                    "memory_delta": [],
+                },
+            )
+
+            rejected = subprocess.run(
+                [
+                    "python3",
+                    str(SOURCE_ROOT / "wf/tools/aiwf.py"),
+                    "submit",
+                    "--workspace",
+                    str(workspace),
+                    "--work-id",
+                    str(implementation["work_id"]),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(rejected.returncode, 4)
+            error = json.loads(rejected.stderr)["error"]
+            self.assertEqual(error["code"], "repository_change_mismatch")
+            self.assertEqual(error["details"]["unreported"], ["src/app.txt"])
 
 
 if __name__ == "__main__":

@@ -61,7 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
             )
             command_parser.add_argument(
                 "--code-repository",
-                help="Optional existing code repository directory.",
+                required=True,
+                help="Existing code repository directory.",
             )
             command_parser.add_argument("--project-id", help="Optional stable project id.")
         elif spec.name == "prepare":
@@ -94,6 +95,24 @@ def build_parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Archive conflicting unfinished work after explicit user confirmation.",
             )
+        elif spec.name == "resolve-drift":
+            command_parser.add_argument("--artifact-id", required=True, help="Artifact id.")
+            command_parser.add_argument("--revision", required=True, type=int, help="Current revision.")
+            command_parser.add_argument(
+                "--outcome",
+                required=True,
+                choices=("adopt", "discard"),
+                help="Adopt external content into successor work or restore the recorded snapshot.",
+            )
+            command_parser.add_argument(
+                "--feedback",
+                help="Required user feedback when adopting external content.",
+            )
+            command_parser.add_argument(
+                "--supersede-active-work",
+                action="store_true",
+                help="Archive conflicting unfinished work after explicit user confirmation.",
+            )
         elif spec.name == "question":
             command_parser.add_argument("--work-id", required=True, help="Active work id.")
             command_parser.add_argument(
@@ -104,13 +123,32 @@ def build_parser() -> argparse.ArgumentParser:
         elif spec.name == "decide":
             command_parser.add_argument("--question-id", required=True, help="Open question id.")
             command_parser.add_argument("--decision", required=True, help="User decision text.")
-        elif spec.name == "migrate":
+        elif spec.name == "route-decision":
+            command_parser.add_argument("--work-id", required=True, help="Decision work id.")
             command_parser.add_argument(
-                "--apply",
-                action="store_true",
-                help="Apply the migration after reviewing the default preview.",
+                "--outcome",
+                required=True,
+                choices=("resume", "revise"),
+                help="Resume the current work or revise an approved upstream artifact.",
             )
-
+            command_parser.add_argument("--artifact-id", help="Approved upstream artifact id.")
+            command_parser.add_argument("--revision", type=int, help="Approved revision number.")
+        elif spec.name == "route-upstream":
+            command_parser.add_argument("--work-id", required=True, help="Active work id.")
+            command_parser.add_argument(
+                "--artifact-id", required=True, help="Approved upstream artifact id."
+            )
+            command_parser.add_argument(
+                "--revision", required=True, type=int, help="Approved revision number."
+            )
+            command_parser.add_argument(
+                "--correction", required=True, help="Repository-backed factual correction."
+            )
+            command_parser.add_argument(
+                "--evidence-json",
+                required=True,
+                help="JSON array of repository path and symbol evidence.",
+            )
     return parser
 
 

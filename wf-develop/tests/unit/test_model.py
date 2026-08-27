@@ -7,7 +7,13 @@ from support import TOOLS_ROOT
 
 sys.path.insert(0, str(TOOLS_ROOT))
 
-from aiwf_core.model import COMMAND_SPECS, MODES, SCHEMA_VERSION, STAGES  # noqa: E402
+from aiwf_core.model import (  # noqa: E402
+    COMMAND_SPECS,
+    MODES,
+    SCHEMA_VERSION,
+    STAGES,
+    TASK_STATUSES,
+)
 
 
 class WorkflowModelTests(unittest.TestCase):
@@ -21,16 +27,19 @@ class WorkflowModelTests(unittest.TestCase):
                 "submit",
                 "review",
                 "revise",
+                "resolve-drift",
                 "question",
                 "decide",
+                "route-decision",
+                "route-upstream",
                 "status",
                 "render",
-                "migrate",
             ],
         )
 
     def test_stage_and_mode_vocabulary_is_stable(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 1)
+        self.assertEqual(SCHEMA_VERSION, 8)
+        self.assertNotIn("deferred", TASK_STATUSES)
         self.assertEqual(
             STAGES,
             (
@@ -42,7 +51,7 @@ class WorkflowModelTests(unittest.TestCase):
                 "completed",
             ),
         )
-        self.assertEqual(MODES, ("ready", "working", "review", "blocked"))
+        self.assertEqual(MODES, ("ready", "working", "review", "blocked", "decision"))
 
 
 if __name__ == "__main__":

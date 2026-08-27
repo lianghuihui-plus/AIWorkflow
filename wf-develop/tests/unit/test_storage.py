@@ -39,7 +39,7 @@ class WorkspaceBootstrapTests(unittest.TestCase):
                 "project_id": "bootstrap-test",
                 "name": "Bootstrap Test",
                 "platform": "test",
-                "code_repository": None,
+                "code_repository": str(workspace),
                 "prd_files": ["prd/input.md"],
             }
             import aiwf_core.storage as storage_module

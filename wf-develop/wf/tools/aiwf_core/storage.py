@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import AIWorkflowError, SCHEMA_VERSION, now_iso, validate_document
-from .render import render_memory
+from .memory_view import render_memory
 
 DATA_FILES = (
     "project.json",
@@ -86,8 +87,6 @@ class WorkspaceStore:
         project: Mapping[str, Any],
         *,
         prd_files: Mapping[str, bytes] | None = None,
-        allow_existing: bool = False,
-        reuse_existing_prd: bool = False,
     ) -> None:
         if not self.root.is_dir():
             raise AIWorkflowError(
@@ -97,7 +96,7 @@ class WorkspaceStore:
                 details={"path": str(self.root)},
             )
         existing_entries = list(self.root.iterdir())
-        if existing_entries and not allow_existing:
+        if existing_entries:
             raise AIWorkflowError(
                 code="workspace_not_empty",
                 message="Workspace directory must be empty before initialization.",
@@ -107,26 +106,6 @@ class WorkspaceStore:
                     "entries": sorted(path.name for path in existing_entries),
                 },
             )
-        if allow_existing:
-            conflicts = [
-                path.name
-                for path in (self.data_root, self.root / "artifacts", self.root / "legacy-backup")
-                if path.exists()
-            ]
-            if conflicts:
-                raise AIWorkflowError(
-                    code="migration_target_exists",
-                    message="New workflow or migration backup targets already exist.",
-                    exit_code=5,
-                    details={"entries": conflicts},
-                )
-        if reuse_existing_prd and not (self.root / "prd").is_dir():
-            raise AIWorkflowError(
-                code="legacy_prd_missing",
-                message="Legacy workspace must contain a prd directory.",
-                exit_code=4,
-            )
-
         timestamp = now_iso()
         project_data = dict(project)
         project_data.setdefault("schema_version", SCHEMA_VERSION)
@@ -173,8 +152,7 @@ class WorkspaceStore:
         installed_paths: list[Path] = []
         try:
             temporary_root.mkdir()
-            if not reuse_existing_prd:
-                temporary_prd.mkdir()
+            temporary_prd.mkdir()
             temporary_artifacts.mkdir()
             for directory in ("results", "history", "work", "transactions"):
                 (temporary_root / directory).mkdir(parents=True)
@@ -199,18 +177,16 @@ class WorkspaceStore:
                 encoding="utf-8",
             )
             (temporary_root / "workspace.lock").touch()
-            if not reuse_existing_prd:
-                for filename, content in copied_prd.items():
-                    (temporary_prd / filename).write_bytes(content)
+            for filename, content in copied_prd.items():
+                (temporary_prd / filename).write_bytes(content)
             for directory in ("specs", "reports", "tests"):
                 (temporary_artifacts / directory).mkdir()
 
             installs = [
+                (temporary_prd, self.root / "prd"),
                 (temporary_artifacts, self.root / "artifacts"),
                 (temporary_root, self.data_root),
             ]
-            if not reuse_existing_prd:
-                installs.insert(0, (temporary_prd, self.root / "prd"))
             for source, target in installs:
                 os.replace(source, target)
                 installed_paths.append(target)
@@ -307,13 +283,42 @@ class WorkspaceStore:
                 message="Cannot read events.jsonl.",
                 exit_code=4,
             ) from error
-        if any(not isinstance(event, dict) for event in events):
-            raise AIWorkflowError(
-                code="invalid_schema",
-                message="Every event must be a JSON object.",
-                exit_code=4,
-            )
+        seen_ids: set[str] = set()
+        previous_number = 0
+        for event in events:
+            if not isinstance(event, dict):
+                self._fail_event_schema("every event must be a JSON object")
+            event_id = event.get("event_id")
+            if not isinstance(event_id, str) or not re.fullmatch(r"E-\d{6,}", event_id):
+                self._fail_event_schema("event_id must be a valid event id")
+            event_number = int(event_id.rsplit("-", 1)[1])
+            if event_id in seen_ids or event_number <= previous_number:
+                self._fail_event_schema("event ids must be unique and increasing")
+            seen_ids.add(event_id)
+            previous_number = event_number
+            for field_name in ("type", "transaction_id", "created_at"):
+                value = event.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    self._fail_event_schema(f"{field_name} must be a non-empty string")
+            command_key = event.get("command_key")
+            if command_key is not None and (
+                not isinstance(command_key, str) or not command_key.strip()
+            ):
+                self._fail_event_schema("command_key must be a string or null")
+            digest = event.get("request_digest")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                self._fail_event_schema("request_digest must be a SHA-256 digest")
+            if not isinstance(event.get("data"), dict):
+                self._fail_event_schema("event data must be a JSON object")
         return events
+
+    def _fail_event_schema(self, message: str) -> None:
+        raise AIWorkflowError(
+            code="invalid_schema",
+            message=f"Invalid events.jsonl: {message}",
+            exit_code=4,
+            details={"document": "events.jsonl"},
+        )
 
     def find_event(self, command_key: str) -> dict[str, Any] | None:
         for event in reversed(self.read_events()):

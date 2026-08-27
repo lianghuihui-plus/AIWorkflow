@@ -15,19 +15,27 @@ def analysis_result(*, requirement_id: str | None = None, summary: str = "Save a
     requirement: dict[str, object] = {
         "title": "Save drafts",
         "summary": summary,
-        "sources": ["prd/requirements.md#save-drafts"],
+        "sources": [{"kind": "prd", "ref": "prd/requirements.md#save-drafts"}],
+        "platform_scope": "target",
+        "change_type": "new",
+        "scope_reason": "Implemented by the initialized target platform.",
+        "disposition": "proposed",
     }
     if requirement_id is not None:
         requirement["id"] = requirement_id
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": "analysis",
+        "target_platform": "test",
         "requirements": [requirement],
         "memory_delta": [
             {
                 "operation": "add",
-                "type": "Project Goal",
+                "type": "architecture_decision",
                 "content": summary,
+                "evidence": [],
+                "rationale": "Confirmed by the approved analysis.",
+                "validation": None,
                 "target_id": None,
             }
         ],
@@ -38,6 +46,20 @@ def design_result() -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
         "stage": "design",
+        "requirements": ["REQ-001"],
+        "design_mode": "anchored",
+        "greenfield_reason": None,
+        "code_evidence": [
+            {"path": "app.txt", "symbol": "ApplicationRoot", "purpose": "Application integration root"}
+        ],
+        "memory_delta": [],
+    }
+
+
+def task_plan_result() -> dict[str, object]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "stage": "specification",
         "tasks": [
             {
                 "key": "draft-storage",
@@ -76,6 +98,45 @@ def task_result(stage: str) -> dict[str, object]:
 
 
 class WorkflowCoreTests(unittest.TestCase):
+    def test_decision_supersession_applies_only_after_artifact_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = bootstrap_engine(Path(directory))
+            work = engine.prepare_work(goal="Analyze requirements")
+            opened = engine.open_questions(
+                work["work_id"],
+                [
+                    {
+                        "question": "Should drafts sync?",
+                        "reason": "This changes scope.",
+                        "recommendation": "Keep drafts local.",
+                        "impact": ["analysis", "design"],
+                    }
+                ],
+            )
+            engine.decide(opened["question_ids"][0], "Keep drafts local.")
+            routed = engine.route_decision(work["work_id"], outcome="resume")
+            resumed = engine.prepare_work(goal="ignored")
+            self.assertEqual(resumed["work_id"], routed["successor_work_id"])
+            result = analysis_result()
+            result["superseded_decisions"] = ["D-001"]
+            write_work_outputs(
+                engine,
+                resumed,
+                markdown="# Analysis\n\nThe latest confirmed scope replaces the earlier answer.\n",
+                result=result,
+            )
+
+            engine.submit_work(resumed["work_id"])
+            self.assertEqual(
+                engine.store.read_json("decisions.json")["items"][0]["status"],
+                "active",
+            )
+            engine.review_artifact("analysis", 1, outcome="approved")
+
+            updated = engine.store.read_json("decisions.json")["items"][0]
+            self.assertEqual(updated["status"], "superseded")
+            self.assertEqual(updated["superseded_by"], "analysis@1")
+
     def test_new_engine_instance_resumes_the_same_active_work(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             engine = bootstrap_engine(Path(directory))
@@ -184,6 +245,14 @@ class WorkflowCoreTests(unittest.TestCase):
             self.assertEqual(successor["work_id"], change["work_id"])
             self.assertEqual(successor["feedback"], "Clarify offline behavior.")
             self.assertIn("Analysis v1", engine.store.safe_path(successor["draft_output"]).read_text())
+            successor_seed = json.loads(
+                engine.store.safe_path(successor["result_output"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                successor_seed["memory_delta"],
+                analysis_result()["memory_delta"],
+            )
+            self.assertNotIn("origin_revision", successor_seed["requirements"][0])
             with self.assertRaises(AIWorkflowError) as raised:
                 engine.review_artifact(
                     "analysis",
@@ -246,12 +315,14 @@ class WorkflowCoreTests(unittest.TestCase):
             ]), opened)
 
             first = engine.decide(opened["question_ids"][0], "Keep drafts offline.")
-            self.assertIsNone(first["successor_work_id"])
+            self.assertFalse(first["routing_required"])
             self.assertEqual(engine.store.read_json("state.json")["mode"], "blocked")
             second = engine.decide(opened["question_ids"][1], "Drafts do not expire.")
-            self.assertIsNotNone(second["successor_work_id"])
+            self.assertTrue(second["routing_required"])
+            self.assertEqual(engine.store.read_json("state.json")["mode"], "decision")
+            routed = engine.route_decision(work["work_id"], outcome="resume")
             resumed = engine.prepare_work(goal="Ignored while resuming")
-            self.assertEqual(resumed["work_id"], second["successor_work_id"])
+            self.assertEqual(resumed["work_id"], routed["successor_work_id"])
             self.assertEqual(
                 engine.store.safe_path(resumed["draft_output"]).read_text(encoding="utf-8"),
                 "# Partial analysis\n",
@@ -259,6 +330,132 @@ class WorkflowCoreTests(unittest.TestCase):
             memory_markdown = (Path(directory) / ".aiwf/memory.md").read_text(encoding="utf-8")
             self.assertIn("Keep drafts offline.", memory_markdown)
             self.assertIn("Drafts do not expire.", memory_markdown)
+
+    def test_confirmed_upstream_change_routes_to_revision_work(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            engine = bootstrap_engine(workspace)
+
+            analysis = engine.prepare_work(goal="Analyze")
+            write_work_outputs(engine, analysis, markdown="# Analysis\n", result=analysis_result())
+            engine.submit_work(analysis["work_id"])
+            engine.review_artifact("analysis", 1, outcome="approved")
+
+            design = engine.prepare_work(goal="Design", depends_on=["analysis@1"])
+            write_work_outputs(engine, design, markdown="# Design\n", result=design_result())
+            engine.submit_work(design["work_id"])
+            engine.review_artifact("design", 1, outcome="approved")
+
+            task_plan = engine.prepare_work(goal="Plan tasks", depends_on=["design@1"])
+            engine.store.safe_path(task_plan["draft_output"]).write_text(
+                "# Partial task plan\n",
+                encoding="utf-8",
+            )
+            opened = engine.open_questions(
+                task_plan["work_id"],
+                [
+                    {
+                        "question": "Should drafts sync across devices?",
+                        "reason": "The answer changes the accepted requirement and architecture.",
+                        "recommendation": "Keep the first version local.",
+                        "impact": ["analysis", "design"],
+                    }
+                ],
+            )
+            engine.decide(opened["question_ids"][0], "Require cross-device synchronization.")
+
+            routed = engine.route_decision(
+                task_plan["work_id"],
+                outcome="revise",
+                artifact_id="analysis",
+                revision=1,
+            )
+
+            revision_work = engine.prepare_work(goal="Ignored while resuming")
+            self.assertEqual(revision_work["work_id"], routed["successor_work_id"])
+            self.assertEqual(revision_work["stage"], "analysis")
+            self.assertIn("Require cross-device synchronization", revision_work["feedback"])
+            self.assertTrue(
+                (workspace / ".aiwf/history/abandoned" / task_plan["work_id"] / "work.json").is_file()
+            )
+            event_types = [item["type"] for item in engine.store.read_events()]
+            self.assertIn("decision_route_selected", event_types)
+            self.assertIn("work_superseded", event_types)
+
+    def test_decision_revision_allows_an_upstream_target_beyond_predicted_impact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = bootstrap_engine(Path(directory))
+            analysis = engine.prepare_work(goal="Analyze")
+            write_work_outputs(engine, analysis, markdown="# Analysis\n", result=analysis_result())
+            engine.submit_work(analysis["work_id"])
+            engine.review_artifact("analysis", 1, outcome="approved")
+            design = engine.prepare_work(goal="Design", depends_on=["analysis@1"])
+            write_work_outputs(engine, design, markdown="# Design\n", result=design_result())
+            engine.submit_work(design["work_id"])
+            engine.review_artifact("design", 1, outcome="approved")
+            task_plan = engine.prepare_work(goal="Plan tasks", depends_on=["design@1"])
+            opened = engine.open_questions(
+                task_plan["work_id"],
+                [
+                    {
+                        "question": "Clarify architecture naming?",
+                        "reason": "The module name is ambiguous.",
+                        "recommendation": "Keep the existing name.",
+                        "impact": ["design"],
+                    }
+                ],
+            )
+            engine.decide(opened["question_ids"][0], "Rename the design module.")
+
+            routed = engine.route_decision(
+                task_plan["work_id"],
+                outcome="revise",
+                artifact_id="analysis",
+                revision=1,
+            )
+
+            self.assertTrue(routed["impact_expanded"])
+            self.assertEqual(routed["declared_impacts"], ["design"])
+            self.assertEqual(routed["target_stage"], "analysis")
+
+    def test_decision_revision_still_rejects_a_non_upstream_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = bootstrap_engine(Path(directory))
+            work = {"depends_on": ["design@1"]}
+            design = {
+                "id": "design",
+                "revision": 1,
+                "stage": "design",
+                "depends_on": ["analysis@1"],
+            }
+            analysis = {
+                "id": "analysis",
+                "revision": 1,
+                "stage": "analysis",
+                "depends_on": [],
+            }
+            unrelated = {
+                "id": "T-999-spec",
+                "revision": 1,
+                "stage": "specification",
+                "depends_on": [],
+            }
+            resolved = [
+                {
+                    "question": {"impact": ["specification"]},
+                    "decision": {"id": "D-001", "decision": "Revise the unrelated task."},
+                }
+            ]
+
+            with self.assertRaises(AIWorkflowError) as raised:
+                engine._validate_decision_revision_target(
+                    work,
+                    unrelated,
+                    resolved,
+                    {"items": [analysis, design, unrelated]},
+                )
+
+            self.assertEqual(raised.exception.code, "invalid_decision_route")
 
     def test_upstream_revision_recursively_invalidates_all_downstream_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -274,10 +471,23 @@ class WorkflowCoreTests(unittest.TestCase):
             engine.submit_work(design["work_id"])
             engine.review_artifact("design", 1, outcome="approved")
 
+            task_plan = engine.prepare_work(
+                goal="Plan tasks",
+                depends_on=["design@1"],
+            )
+            write_work_outputs(
+                engine,
+                task_plan,
+                markdown="# Task Plan\n",
+                result=task_plan_result(),
+            )
+            engine.submit_work(task_plan["work_id"])
+            engine.review_artifact("task-plan", 1, outcome="approved")
+
             specification = engine.prepare_work(
                 goal="Specify T-001",
                 active_item="T-001",
-                depends_on=["analysis@1", "design@1"],
+                depends_on=["task-plan@1"],
             )
             write_work_outputs(
                 engine,
@@ -337,7 +547,13 @@ class WorkflowCoreTests(unittest.TestCase):
 
             self.assertEqual(
                 set(submitted["invalidated"]),
-                {"design", "T-001-spec", "T-001-implementation", "T-001-test"},
+                {
+                    "design",
+                    "task-plan",
+                    "T-001-spec",
+                    "T-001-implementation",
+                    "T-001-test",
+                },
             )
             artifacts = {
                 item["id"]: item for item in engine.store.read_json("artifacts.json")["items"]

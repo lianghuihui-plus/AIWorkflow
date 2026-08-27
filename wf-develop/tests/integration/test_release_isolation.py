@@ -10,7 +10,6 @@ class ReleaseIsolationTests(unittest.TestCase):
     def test_formal_source_is_the_develop_directory(self) -> None:
         self.assertTrue(SOURCE_ROOT.is_relative_to(DEVELOP_ROOT))
         self.assertEqual(SOURCE_ROOT, DEVELOP_ROOT)
-        self.assertFalse((DEVELOP_ROOT / "_rewrite").exists())
 
     def test_develop_source_does_not_resolve_into_release(self) -> None:
         release_root = (REPOSITORY_ROOT / "wf-release").resolve()

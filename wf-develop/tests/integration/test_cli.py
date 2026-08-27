@@ -15,14 +15,17 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         for command in (
             "init",
+            "recover",
             "prepare",
             "submit",
             "review",
+            "revise",
             "question",
             "decide",
+            "route-decision",
+            "route-upstream",
             "status",
             "render",
-            "migrate",
         ):
             self.assertIn(command, completed.stdout)
 
@@ -31,18 +34,7 @@ class CommandLineTests(unittest.TestCase):
             completed = run_cli(["--version"], cwd=Path(directory))
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc2")
-
-    def test_migrate_rejects_a_non_legacy_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as workspace:
-            completed = run_cli(["migrate", "--workspace", workspace])
-
-        self.assertEqual(completed.returncode, 4)
-        self.assertEqual(completed.stdout, "")
-        self.assertNotIn("Traceback", completed.stderr)
-        payload = json.loads(completed.stderr)
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"]["code"], "legacy_workspace_not_found")
+        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc10")
 
     def test_missing_workspace_returns_structured_error(self) -> None:
         completed = run_cli(["status", "--workspace", "/path/that/does/not/exist"])
@@ -50,6 +42,20 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         payload = json.loads(completed.stderr)
         self.assertEqual(payload["error"]["code"], "invalid_workspace")
+
+    def test_uninitialized_directory_is_rejected_without_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            existing = workspace / "CONTEXT.md"
+            existing.write_text("# Existing workspace\n", encoding="utf-8")
+
+            completed = run_cli(["status", "--workspace", str(workspace)])
+
+            self.assertEqual(completed.returncode, 5)
+            payload = json.loads(completed.stderr)
+            self.assertEqual(payload["error"]["code"], "not_initialized")
+            self.assertEqual(existing.read_text(encoding="utf-8"), "# Existing workspace\n")
+            self.assertFalse((workspace / ".aiwf").exists())
 
     def test_invalid_arguments_return_structured_error(self) -> None:
         completed = run_cli(["unknown-command"])
