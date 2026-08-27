@@ -11,7 +11,13 @@ from aiwf_core.model import now_iso
 from aiwf_core.storage import InjectedTransactionFailure, json_bytes, sha256_bytes
 from aiwf_core.workflow import WorkflowEngine
 from integration.test_analysis_cli import initialize_workspace as initialize_base_workspace
-from integration.test_design_specification_cli import approve_analysis, run_success, write_outputs
+from integration.test_design_specification_cli import (
+    approve_analysis,
+    approve_design,
+    approve_task_plan,
+    run_success,
+    write_outputs,
+)
 
 
 def initialize_workspace(root: Path) -> Path:
@@ -48,7 +54,106 @@ def submit_analysis_for_review(workspace: Path) -> dict[str, object]:
     return work
 
 
+def submit_analysis_revision(workspace: Path, *, revision: int = 1) -> dict[str, object]:
+    run_success(
+        [
+            "revise",
+            "--workspace",
+            str(workspace),
+            "--artifact-id",
+            "analysis",
+            "--revision",
+            str(revision),
+            "--feedback",
+            "Clarify the approved requirement.",
+        ]
+    )
+    work = run_success(["prepare", "--workspace", str(workspace)])
+    result = json.loads((workspace / str(work["result_output"])).read_text(encoding="utf-8"))
+    result["requirements"][0]["summary"] = "Users save drafts with clarified behavior."
+    write_outputs(
+        workspace,
+        work,
+        markdown="# Analysis\n\nUsers save drafts with clarified behavior.\n",
+        result=result,
+    )
+    return run_success(
+        ["submit", "--workspace", str(workspace), "--work-id", str(work["work_id"])]
+    )
+
+
 class RecoveryRevisionCommandLineTests(unittest.TestCase):
+    def test_analysis_revision_can_be_approved_after_design_becomes_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = initialize_workspace(Path(directory))
+            approve_analysis(workspace)
+            approve_design(workspace, ["REQ-001"])
+
+            submitted = submit_analysis_revision(workspace)
+            status = run_success(["status", "--workspace", str(workspace)])
+
+            self.assertEqual(submitted["invalidated"], ["design"])
+            self.assertTrue(status["can_advance"])
+            self.assertNotIn(
+                "design_requirement_mismatch",
+                {issue["type"] for issue in status["issues"]},
+            )
+            run_success(
+                [
+                    "review",
+                    "--workspace",
+                    str(workspace),
+                    "--artifact-id",
+                    "analysis",
+                    "--revision",
+                    "2",
+                    "--outcome",
+                    "approved",
+                ]
+            )
+            after = run_success(["status", "--workspace", str(workspace)])
+            self.assertEqual(after["state"]["current_stage"], "design")
+            self.assertEqual(after["counts"]["accepted_requirements"], 1)
+
+    def test_stale_task_plan_and_tasks_do_not_block_analysis_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = initialize_workspace(Path(directory))
+            approve_analysis(workspace)
+            approve_design(workspace, ["REQ-001"])
+            approve_task_plan(
+                workspace,
+                [
+                    {
+                        "key": "drafts",
+                        "title": "Persist drafts",
+                        "requirements": ["REQ-001"],
+                        "depends_on": [],
+                    }
+                ],
+            )
+
+            submit_analysis_revision(workspace)
+            status = run_success(["status", "--workspace", str(workspace)])
+
+            self.assertTrue(status["can_advance"])
+            self.assertFalse(
+                {"design_requirement_mismatch", "task_reference_mismatch", "uncovered_requirements"}
+                & {issue["type"] for issue in status["issues"]}
+            )
+            run_success(
+                [
+                    "review",
+                    "--workspace",
+                    str(workspace),
+                    "--artifact-id",
+                    "analysis",
+                    "--revision",
+                    "2",
+                    "--outcome",
+                    "approved",
+                ]
+            )
+
     def test_review_content_drift_can_be_discarded_without_leaving_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = initialize_workspace(Path(directory))

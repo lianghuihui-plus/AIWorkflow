@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from support import bootstrap_engine, write_work_outputs
 
@@ -561,6 +562,59 @@ class WorkflowCoreTests(unittest.TestCase):
             for artifact_id in submitted["invalidated"]:
                 self.assertEqual(artifacts[artifact_id]["status"], "stale")
             self.assertEqual(engine.store.read_json("tasks.json")["items"][0]["status"], "stale")
+            self.assertTrue(engine.inspect()["can_advance"])
+            engine.review_artifact("analysis", 2, outcome="approved")
+            self.assertEqual(
+                engine.store.read_json("state.json")["current_stage"],
+                "design",
+            )
+
+    def test_projected_health_failure_does_not_commit_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            engine = bootstrap_engine(Path(directory))
+
+            analysis = engine.prepare_work(goal="Analyze")
+            write_work_outputs(engine, analysis, markdown="# Analysis\n", result=analysis_result())
+            engine.submit_work(analysis["work_id"])
+            engine.review_artifact("analysis", 1, outcome="approved")
+
+            design = engine.prepare_work(goal="Design")
+            write_work_outputs(engine, design, markdown="# Design\n", result=design_result())
+            engine.submit_work(design["work_id"])
+            engine.review_artifact("design", 1, outcome="approved")
+
+            task_plan = engine.prepare_work(goal="Plan")
+            write_work_outputs(
+                engine,
+                task_plan,
+                markdown="# Task Plan\n",
+                result=task_plan_result(),
+            )
+            engine.submit_work(task_plan["work_id"])
+            before = {
+                name: engine.store.safe_path(f".aiwf/{name}").read_bytes()
+                for name in ("state.json", "artifacts.json", "tasks.json", "events.jsonl")
+            }
+            requirements = engine.store.read_json("requirements.json")
+            empty_tasks = {"schema_version": SCHEMA_VERSION, "items": []}
+
+            with patch(
+                "aiwf_core.workflow.approve_indexes",
+                return_value=(requirements, empty_tasks),
+            ):
+                with self.assertRaises(AIWorkflowError) as raised:
+                    engine.review_artifact("task-plan", 1, outcome="approved")
+
+            self.assertEqual(raised.exception.code, "workspace_health_blocked")
+            self.assertEqual(
+                raised.exception.details["issues"][0]["type"],
+                "uncovered_requirements",
+            )
+            after = {
+                name: engine.store.safe_path(f".aiwf/{name}").read_bytes()
+                for name in before
+            }
+            self.assertEqual(after, before)
 
     def test_result_manifest_drift_also_blocks_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -28,6 +28,7 @@ from .decisions import (
     supersede_decisions_by_artifact,
     validate_active_decision_ids,
 )
+from .health import semantic_artifact_ids, semantic_health_issues
 from .initialization import prepare_initialization
 from .model import (
     AIWorkflowError,
@@ -778,6 +779,7 @@ class WorkflowEngine:
                     details={"artifact_id": artifact_id, "revision": revision},
                 )
             verify_artifact_integrity(self.store.root, artifact)
+            _assert_inspection_can_advance(self._inspect_locked())
             result = self.store.read_json_path(artifact["result_path"])
             memory = apply_memory_delta(
                 self.store.read_json("memory.json"),
@@ -808,6 +810,20 @@ class WorkflowEngine:
                 stage=artifact["stage"],
                 reviewed_ref=reviewed_ref,
             )
+            projected_issues = [
+                self._classify_health_issue(issue)
+                for issue in semantic_health_issues(
+                    requirements=requirements,
+                    tasks=tasks,
+                    artifacts=artifacts,
+                    artifact_results=self._semantic_artifact_results(
+                        artifacts,
+                        overrides={artifact_id: result},
+                    ),
+                )
+            ]
+            if any(issue["blocking"] for issue in projected_issues):
+                _raise_workspace_health_blocked(projected_issues)
             decisions = supersede_decisions_by_artifact(
                 self.store.read_json("decisions.json"),
                 result.get("superseded_decisions", []),
@@ -1320,281 +1336,247 @@ class WorkflowEngine:
 
     def inspect(self) -> dict[str, Any]:
         with self.store.lock(exclusive=False):
-            if self.store.has_pending_transactions():
-                return {"status": "needs_recovery", "workspace": str(self.store.root)}
-            self.store.read_events()
-            documents = {name: self.store.read_json(name) for name in (
-                "project.json",
-                "state.json",
-                "requirements.json",
-                "tasks.json",
-                "artifacts.json",
-                "decisions.json",
-                "questions.json",
-                "memory.json",
-            )}
-            issues: list[dict[str, Any]] = []
-            expected_memory = render_memory(
-                documents["memory.json"], documents["decisions.json"]
-            ).encode("utf-8")
+            return self._inspect_locked()
+
+    def _inspect_locked(self) -> dict[str, Any]:
+        if self.store.has_pending_transactions():
+            return {"status": "needs_recovery", "workspace": str(self.store.root)}
+        self.store.read_events()
+        documents = {name: self.store.read_json(name) for name in (
+            "project.json",
+            "state.json",
+            "requirements.json",
+            "tasks.json",
+            "artifacts.json",
+            "decisions.json",
+            "questions.json",
+            "memory.json",
+        )}
+        issues: list[dict[str, Any]] = []
+        expected_memory = render_memory(
+            documents["memory.json"], documents["decisions.json"]
+        ).encode("utf-8")
+        try:
+            actual_memory = self.store.safe_path(".aiwf/memory.md").read_bytes()
+        except OSError:
+            actual_memory = None
+        if actual_memory != expected_memory:
+            issues.append(
+                {
+                    "level": "error",
+                    "type": "generated_view_drift",
+                    "message": "Generated memory.md does not match its structured sources.",
+                    "details": {"path": ".aiwf/memory.md"},
+                }
+            )
+        drifted_artifact_ids: set[str] = set()
+        for artifact in documents["artifacts.json"]["items"]:
+            artifact_issues = artifact_integrity_issues(self.store.root, artifact)
+            if artifact_issues:
+                drifted_artifact_ids.add(artifact["id"])
+                issues.append(
+                    {
+                        "level": "error",
+                        "type": "artifact_drift",
+                        "message": "Registered artifact files do not match their recorded revision.",
+                        "details": {
+                            "artifact_id": artifact["id"],
+                            "revision": artifact["revision"],
+                            "artifact_status": artifact["status"],
+                            "issues": artifact_issues,
+                        },
+                    }
+                )
+        project = documents["project.json"]
+        state = documents["state.json"]
+        for prd_path in project["prd_files"]:
             try:
-                actual_memory = self.store.safe_path(".aiwf/memory.md").read_bytes()
-            except OSError:
-                actual_memory = None
-            if actual_memory != expected_memory:
+                path = self.store.safe_path(prd_path)
+            except AIWorkflowError as error:
                 issues.append(
                     {
                         "level": "error",
-                        "type": "generated_view_drift",
-                        "message": "Generated memory.md does not match its structured sources.",
-                        "details": {"path": ".aiwf/memory.md"},
+                        "type": error.code,
+                        "message": error.message,
+                        "details": error.details,
                     }
                 )
-            drifted_artifact_ids: set[str] = set()
-            for artifact in documents["artifacts.json"]["items"]:
-                artifact_issues = artifact_integrity_issues(self.store.root, artifact)
-                if artifact_issues:
-                    drifted_artifact_ids.add(artifact["id"])
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "artifact_drift",
-                            "message": "Registered artifact files do not match their recorded revision.",
-                            "details": {
-                                "artifact_id": artifact["id"],
-                                "revision": artifact["revision"],
-                                "artifact_status": artifact["status"],
-                                "issues": artifact_issues,
-                            },
-                        }
-                    )
-            project = documents["project.json"]
-            state = documents["state.json"]
-            for prd_path in project["prd_files"]:
-                try:
-                    path = self.store.safe_path(prd_path)
-                except AIWorkflowError as error:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": error.code,
-                            "message": error.message,
-                            "details": error.details,
-                        }
-                    )
-                    continue
-                if not path.is_file():
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "prd_missing",
-                            "message": "Configured PRD copy is missing.",
-                            "details": {"path": prd_path},
-                        }
-                    )
-            repository = project["code_repository"]
-            if not Path(repository).is_dir():
+                continue
+            if not path.is_file():
                 issues.append(
                     {
                         "level": "error",
-                        "type": "code_repository_unavailable",
-                        "message": "Configured code repository is not accessible.",
-                        "details": {"path": repository},
+                        "type": "prd_missing",
+                        "message": "Configured PRD copy is missing.",
+                        "details": {"path": prd_path},
                     }
                 )
-            artifacts_by_ref = {
-                f"{item['id']}@{item['revision']}": item
-                for item in documents["artifacts.json"]["items"]
-            }
-            for reference in state["pending_reviews"]:
-                artifact = artifacts_by_ref.get(reference)
-                if artifact is None or artifact["status"] != "review":
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "pending_review_mismatch",
-                            "message": "Pending review does not match the artifact registry.",
-                            "details": {"reference": reference},
-                        }
-                    )
-            open_questions = {
-                item["id"]: item
-                for item in documents["questions.json"]["items"]
-                if item["status"] == "open"
-            }
-            for question_id in state["blocking_questions"]:
-                if question_id not in open_questions:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "blocking_question_mismatch",
-                            "message": "Blocking question is not open in the question registry.",
-                            "details": {"question_id": question_id},
-                        }
-                    )
-            if state["active_work"] is not None:
-                try:
-                    self._read_work(
-                        state["active_work"],
-                        expected_hash=state["active_work_sha256"],
-                    )
-                except AIWorkflowError as error:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": error.code,
-                            "message": error.message,
-                            "details": error.details,
-                        }
-                    )
-            requirement_ids = {item["id"] for item in documents["requirements.json"]["items"]}
-            accepted_requirement_ids = {
-                item["id"]
-                for item in documents["requirements.json"]["items"]
-                if item["disposition"] == "accepted"
-            }
-            design_artifact = find_artifact(documents["artifacts.json"], "design")
-            if design_artifact is not None and "design" not in drifted_artifact_ids:
-                design_result = self.store.read_json_path(design_artifact["result_path"])
-                design_requirement_ids = set(design_result.get("requirements", []))
-                unknown_design_requirements = sorted(
-                    design_requirement_ids - accepted_requirement_ids
+        repository = project["code_repository"]
+        if not Path(repository).is_dir():
+            issues.append(
+                {
+                    "level": "error",
+                    "type": "code_repository_unavailable",
+                    "message": "Configured code repository is not accessible.",
+                    "details": {"path": repository},
+                }
+            )
+        artifacts_by_ref = {
+            f"{item['id']}@{item['revision']}": item
+            for item in documents["artifacts.json"]["items"]
+        }
+        for reference in state["pending_reviews"]:
+            artifact = artifacts_by_ref.get(reference)
+            if artifact is None or artifact["status"] != "review":
+                issues.append(
+                    {
+                        "level": "error",
+                        "type": "pending_review_mismatch",
+                        "message": "Pending review does not match the artifact registry.",
+                        "details": {"reference": reference},
+                    }
                 )
-                missing_design_requirements = sorted(
-                    accepted_requirement_ids - design_requirement_ids
+        open_questions = {
+            item["id"]: item
+            for item in documents["questions.json"]["items"]
+            if item["status"] == "open"
+        }
+        for question_id in state["blocking_questions"]:
+            if question_id not in open_questions:
+                issues.append(
+                    {
+                        "level": "error",
+                        "type": "blocking_question_mismatch",
+                        "message": "Blocking question is not open in the question registry.",
+                        "details": {"question_id": question_id},
+                    }
                 )
-                if unknown_design_requirements or missing_design_requirements:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "design_requirement_mismatch",
-                            "message": "Technical design coverage does not match accepted requirements.",
-                            "details": {
-                                "unknown": unknown_design_requirements,
-                                "missing": missing_design_requirements,
-                            },
-                        }
-                    )
-            task_ids = {item["id"] for item in documents["tasks.json"]["items"]}
-            covered_requirement_ids: set[str] = set()
-            for task in documents["tasks.json"]["items"]:
-                task_requirement_ids = set(task["requirements"])
-                unknown_requirements = sorted(task_requirement_ids - requirement_ids)
-                unavailable_requirements = sorted(
-                    (task_requirement_ids & requirement_ids) - accepted_requirement_ids
-                    if task["status"] != "withdrawn"
-                    else set()
+        if state["active_work"] is not None:
+            try:
+                self._read_work(
+                    state["active_work"],
+                    expected_hash=state["active_work_sha256"],
                 )
-                unknown_dependencies = sorted(set(task["depends_on"]) - task_ids)
-                if task["status"] != "withdrawn":
-                    covered_requirement_ids.update(
-                        task_requirement_ids & accepted_requirement_ids
-                    )
-                if unknown_requirements or unavailable_requirements or unknown_dependencies:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "task_reference_mismatch",
-                            "message": "Task index contains unresolved references.",
-                            "details": {
-                                "task_id": task["id"],
-                                "requirements": unknown_requirements,
-                                "unavailable_requirements": unavailable_requirements,
-                                "dependencies": unknown_dependencies,
-                            },
-                        }
-                    )
-            if any(item["id"] == "task-plan" for item in documents["artifacts.json"]["items"]):
-                uncovered_requirements = sorted(
-                    accepted_requirement_ids - covered_requirement_ids
+            except AIWorkflowError as error:
+                issues.append(
+                    {
+                        "level": "error",
+                        "type": error.code,
+                        "message": error.message,
+                        "details": error.details,
+                    }
                 )
-                if uncovered_requirements:
-                    issues.append(
-                        {
-                            "level": "error",
-                            "type": "uncovered_requirements",
-                            "message": "Accepted requirements are not covered by active task-plan tasks.",
-                            "details": {"ids": uncovered_requirements},
-                        }
-                    )
-            pending_review_items = [
-                artifacts_by_ref[reference]
-                for reference in state["pending_reviews"]
-                if reference in artifacts_by_ref
-            ]
-            blocking_question_items = [
-                open_questions[question_id]
-                for question_id in state["blocking_questions"]
-                if question_id in open_questions
-            ]
-            decisions_by_id = {
-                item["id"]: item for item in documents["decisions.json"]["items"]
-            }
-            decision_context = []
-            if state["mode"] == "decision":
-                for question in documents["questions.json"]["items"]:
-                    if (
-                        question["work_id"] == state["active_work"]
-                        and question["status"] == "resolved"
-                        and question["decision_id"] in decisions_by_id
-                    ):
-                        decision = decisions_by_id[question["decision_id"]]
-                        decision_context.append(
-                            {
-                                "question_id": question["id"],
-                                "question": question["question"],
-                                "decision_id": decision["id"],
-                                "decision": decision["decision"],
-                                "impact": list(question["impact"]),
-                            }
-                        )
-            issues = [self._classify_health_issue(item) for item in issues]
-            can_advance = not any(item["blocking"] for item in issues)
-            return {
-                "status": "ok" if not issues else "issues_found",
-                "workspace": str(self.store.root),
-                "project": project,
-                "state": state,
-                "can_advance": can_advance,
-                "next_action": (
-                    self._next_action(state) if can_advance else "resolve_health_issues"
+        issues.extend(
+            semantic_health_issues(
+                requirements=documents["requirements.json"],
+                tasks=documents["tasks.json"],
+                artifacts=documents["artifacts.json"],
+                artifact_results=self._semantic_artifact_results(
+                    documents["artifacts.json"],
+                    drifted_artifact_ids=drifted_artifact_ids,
                 ),
-                "counts": {
-                    "prd_files": len(project["prd_files"]),
-                    "requirements": len(documents["requirements.json"]["items"]),
-                    "accepted_requirements": sum(
-                        item["disposition"] == "accepted"
-                        for item in documents["requirements.json"]["items"]
-                    ),
-                    "not_accepted_requirements": sum(
-                        item["disposition"] in {"proposed", "deferred", "excluded"}
-                        for item in documents["requirements.json"]["items"]
-                    ),
-                    "withdrawn_requirements": sum(
-                        item["disposition"] == "withdrawn"
-                        for item in documents["requirements.json"]["items"]
-                    ),
-                    "tasks": len(documents["tasks.json"]["items"]),
-                    "artifacts": len(documents["artifacts.json"]["items"]),
-                    "open_questions": len(open_questions),
-                    "decisions": len(documents["decisions.json"]["items"]),
-                    "active_decisions": sum(
-                        item["status"] == "active"
-                        for item in documents["decisions.json"]["items"]
-                    ),
-                    "superseded_decisions": sum(
-                        item["status"] == "superseded"
-                        for item in documents["decisions.json"]["items"]
-                    ),
-                    "memory_entries": sum(
-                        item["status"] == "active" for item in documents["memory.json"]["items"]
-                    ),
-                },
-                "pending_reviews": pending_review_items,
-                "blocking_questions": blocking_question_items,
-                "decision_context": decision_context,
-                "issues": issues,
-            }
+                drifted_artifact_ids=drifted_artifact_ids,
+            )
+        )
+        pending_review_items = [
+            artifacts_by_ref[reference]
+            for reference in state["pending_reviews"]
+            if reference in artifacts_by_ref
+        ]
+        blocking_question_items = [
+            open_questions[question_id]
+            for question_id in state["blocking_questions"]
+            if question_id in open_questions
+        ]
+        decisions_by_id = {
+            item["id"]: item for item in documents["decisions.json"]["items"]
+        }
+        decision_context = []
+        if state["mode"] == "decision":
+            for question in documents["questions.json"]["items"]:
+                if (
+                    question["work_id"] == state["active_work"]
+                    and question["status"] == "resolved"
+                    and question["decision_id"] in decisions_by_id
+                ):
+                    decision = decisions_by_id[question["decision_id"]]
+                    decision_context.append(
+                        {
+                            "question_id": question["id"],
+                            "question": question["question"],
+                            "decision_id": decision["id"],
+                            "decision": decision["decision"],
+                            "impact": list(question["impact"]),
+                        }
+                    )
+        issues = [self._classify_health_issue(item) for item in issues]
+        can_advance = not any(item["blocking"] for item in issues)
+        return {
+            "status": "ok" if not issues else "issues_found",
+            "workspace": str(self.store.root),
+            "project": project,
+            "state": state,
+            "can_advance": can_advance,
+            "next_action": (
+                self._next_action(state) if can_advance else "resolve_health_issues"
+            ),
+            "counts": {
+                "prd_files": len(project["prd_files"]),
+                "requirements": len(documents["requirements.json"]["items"]),
+                "accepted_requirements": sum(
+                    item["disposition"] == "accepted"
+                    for item in documents["requirements.json"]["items"]
+                ),
+                "not_accepted_requirements": sum(
+                    item["disposition"] in {"proposed", "deferred", "excluded"}
+                    for item in documents["requirements.json"]["items"]
+                ),
+                "withdrawn_requirements": sum(
+                    item["disposition"] == "withdrawn"
+                    for item in documents["requirements.json"]["items"]
+                ),
+                "tasks": len(documents["tasks.json"]["items"]),
+                "artifacts": len(documents["artifacts.json"]["items"]),
+                "open_questions": len(open_questions),
+                "decisions": len(documents["decisions.json"]["items"]),
+                "active_decisions": sum(
+                    item["status"] == "active"
+                    for item in documents["decisions.json"]["items"]
+                ),
+                "superseded_decisions": sum(
+                    item["status"] == "superseded"
+                    for item in documents["decisions.json"]["items"]
+                ),
+                "memory_entries": sum(
+                    item["status"] == "active" for item in documents["memory.json"]["items"]
+                ),
+            },
+            "pending_reviews": pending_review_items,
+            "blocking_questions": blocking_question_items,
+            "decision_context": decision_context,
+            "issues": issues,
+        }
+
+    def _semantic_artifact_results(
+        self,
+        artifacts: Mapping[str, Any],
+        *,
+        drifted_artifact_ids: Sequence[str] = (),
+        overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, Mapping[str, Any]]:
+        drifted = set(drifted_artifact_ids)
+        override_results = dict(overrides or {})
+        results: dict[str, Mapping[str, Any]] = {}
+        for artifact_id in semantic_artifact_ids(artifacts):
+            if artifact_id in drifted:
+                continue
+            if artifact_id in override_results:
+                results[artifact_id] = override_results[artifact_id]
+                continue
+            artifact = find_artifact(artifacts, artifact_id)
+            if artifact is not None:
+                results[artifact_id] = self.store.read_json_path(artifact["result_path"])
+        return results
 
     def render(self) -> dict[str, Any]:
         self.recover()
@@ -2572,8 +2554,6 @@ def execute(request: CommandRequest) -> dict[str, Any]:
         _assert_can_advance(engine)
         return _with_dashboard(engine, engine.submit_work(request.options["work_id"]))
     if request.command == "review":
-        if request.options["outcome"] == "approved":
-            _assert_can_advance(engine)
         return _with_dashboard(
             engine,
             engine.review_artifact(
@@ -2675,14 +2655,21 @@ def execute(request: CommandRequest) -> dict[str, Any]:
 
 
 def _assert_can_advance(engine: WorkflowEngine) -> None:
-    inspection = engine.inspect()
+    _assert_inspection_can_advance(engine.inspect())
+
+
+def _assert_inspection_can_advance(inspection: Mapping[str, Any]) -> None:
     if inspection.get("can_advance") is True:
         return
+    _raise_workspace_health_blocked(inspection.get("issues", []))
+
+
+def _raise_workspace_health_blocked(issues: Sequence[Mapping[str, Any]]) -> None:
     raise AIWorkflowError(
         code="workspace_health_blocked",
         message="Resolve blocking workspace health issues before advancing the workflow.",
         exit_code=7,
-        details={"issues": inspection.get("issues", [])},
+        details={"issues": list(issues)},
     )
 
 

@@ -25,7 +25,7 @@ wf-init
   -> 完成
 ```
 
-Agent 每次通过 `prepare` 获得自描述任务包，只读取任务相关输入并写入工作区草稿和结果 seed。`result_seed` 是待填写起点，`result_schema` 是提交契约。`submit` 在事务中提升正式产物并保存不可变 revision 快照，用户通过 `review` 决定批准或要求修改。已批准产物通过 `revise` 创建新 revision，实际变化会使相关下游产物失效。
+Agent 每次通过 `prepare` 获得自描述任务包，只读取任务相关输入并写入工作区草稿和结果 seed。`result_seed` 是待填写起点，`result_schema` 是提交契约。`submit` 在事务中提升正式产物并保存不可变 revision 快照，用户通过 `review` 决定批准或要求修改。已批准产物通过 `revise` 创建新 revision，实际变化会使相关下游产物失效。健康检查继续验证 stale 历史文件的完整性，但需求覆盖和任务引用只校验当前有效产物图；批准操作在内核事务中校验批准后的目标投影，避免合法过渡态形成循环门禁。
 
 阻塞语义工作的问题通过 `question` 一次性提交，用户回答由 `decide` 原样保存。新决定或审核通过的 revision 可以显式替代旧决定；完整历史保留在 `decisions.json`，正常 Agent 上下文只读取当前有效投影。全部问题回答后不会自动继续：`route-decision` 根据用户决定显式恢复当前 work，或归档当前 work 并创建受影响上游产物的 revision；问题 `impact` 是预估信息，实际路由仍严格限制在已批准传递上游。下游工作发现可由仓库证明的上游事实错误时，`route-upstream` 会归档当前 work 并创建最早错误产物的 revision；范围和架构变化仍走人工决策。工作空间发生中断时，`recover` 根据事务日志恢复。正式 Markdown 被工作流外修改时，用户可通过状态化 `resolve-drift` 采纳到 successor work 或恢复记录快照。新内核不读取或迁移旧格式工作空间；旧项目需要在空目录中重新初始化。
 

@@ -34,7 +34,7 @@ class CommandLineTests(unittest.TestCase):
             completed = run_cli(["--version"], cwd=Path(directory))
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc10")
+        self.assertEqual(completed.stdout.strip(), "aiwf 1.0.0rc11")
 
     def test_missing_workspace_returns_structured_error(self) -> None:
         completed = run_cli(["status", "--workspace", "/path/that/does/not/exist"])

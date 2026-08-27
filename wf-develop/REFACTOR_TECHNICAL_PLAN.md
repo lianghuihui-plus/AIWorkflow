@@ -148,6 +148,7 @@ wf-develop/
 │           ├── sources.py
 │           ├── repository.py
 │           ├── review.py
+│           ├── health.py
 │           ├── dashboard.py
 │           └── memory_view.py
 ├── wf-init/
@@ -162,7 +163,7 @@ wf-develop/
 
 `wf` 是共享内核的所有者。`wf-init` 和 `wf-status` 是薄入口，并把调用委托给同一套内核，不再复制校验器。
 `workflow.py` 负责编排用例，`stage_context.py` 负责五阶段任务上下文，事实校验按
-artifact、decision、source 和 repository 分模块；`dashboard.py` 与 `memory_view.py`
+artifact、decision、source、repository 和 health 分模块；`dashboard.py` 与 `memory_view.py`
 分别生成看板和当前记忆投影。
 
 当前实现直接维护上述 develop 正式路径。重构过程中的临时实现目录已经删除，不属于现行架构、
@@ -538,7 +539,9 @@ result schema，Agent 提交时按 schema 提供数据；引擎将校验后的�
 
 技术设计只负责架构与代码组织，不创建执行任务，不展开逐行正式代码；必要时可以使用伪代码。
 
-图表按复杂度和表达价值决定，不要求机械生成固定类型的 Mermaid 图。
+图表按复杂度和表达价值决定，不要求机械生成固定类型的图；一旦需要流程图、类图、关系图、
+架构图、时序图或状态图，必须使用以 `mermaid` 标记的 Markdown 围栏代码块绘制，确保 Markdown
+产物和静态看板使用同一份可维护图表源。
 
 ### 6.5 任务规划与规格产物
 
@@ -765,10 +768,11 @@ stateDiagram-v2
 ### 8.4 健康门禁
 
 `status` 为每个 issue 返回 `blocking` 与 `recovery_action`，并给出顶层 `can_advance`。
-存在阻塞错误时 `next_action=resolve_health_issues`，CLI 拒绝正常 `prepare`、`submit`、批准审核
-以及 decision resume，但继续允许 `status`、`recover`、`resolve-drift`、记录用户决定和创建
-上游 revision。生成视图漂移走确定性恢复，产物漂移走显式采纳或放弃，索引覆盖错误走对应
-上游 revision，仓库不可访问时要求恢复初始化时保存的绝对路径。
+存在阻塞错误时 `next_action=resolve_health_issues`，CLI 拒绝正常 `prepare`、`submit` 以及
+decision resume，但继续允许 `status`、`recover`、`resolve-drift`、记录用户决定和创建上游
+revision。批准审核在内核独占事务中校验当前结构健康和批准后的语义投影，不能被该审批将要
+消除的合法过渡态反向阻塞。生成视图漂移走确定性恢复，产物漂移走显式采纳或放弃，索引覆盖
+错误走对应上游 revision，仓库不可访问时要求恢复初始化时保存的绝对路径。
 
 分析和设计阶段的唯一产物审核通过后推进到下一阶段。规格阶段先生成并审核唯一的
 `task-plan`，再按其中的活动任务逐个生成规格；实现和测试阶段同样按任务逐个执行。
@@ -1421,3 +1425,19 @@ stateDiagram-v2
   `workflow.py` 保留状态、事务和路由编排职责。
 - 自动化测试只证明确定性流程与读写闭环；真实 PRD 的 release/develop 盲评仍是 Agent 需求分析
   与技术设计质量的最终验收，未执行前不得宣称语义能力目标已经完成。
+
+## 29. 当前有效投影与事务内审批门禁
+
+`2026-08-27` 的真实工作空间验证发现，上游 analysis revision 提交后，候选需求会在批准前保持
+`proposed`，同时旧 design、task-plan 和 tasks 已按依赖变为 `stale`。旧健康检查仍把 stale
+下游与当前 accepted 需求比较，并在 CLI 调用审批事务前执行全局门禁，形成审批无法解除的循环。
+
+- 保留“提交候选索引并立即失效下游”的审核模型，不推迟候选数据展示，也不修改 Schema。
+- `health.py` 只负责纯结构化语义规则。`approved/review` 产物参与当前语义投影；`stale` 和
+  `changes_requested` 只保留结构完整性与历史审计，不参与当前需求覆盖和任务引用门禁。
+- task-plan 只有在 `approved/review` 时才激活任务引用与覆盖校验；其中 `withdrawn` 任务退出计划，
+  `stale` 任务仍属于已批准计划，只表示后续规格或实现需要重做。
+- `review_artifact` 在同一个独占锁中校验当前结构健康，构造批准后的 requirements、tasks、
+  artifacts 和 state 投影，再校验目标语义关系，全部通过后才原子提交。
+- CLI 不再在审批事务外重复全局门禁，避免内核直接调用与 CLI 行为分叉及检查提交竞态。
+- stale 产物仍执行正文、结果、work 和快照哈希检查；修复不会掩盖历史文件损坏。

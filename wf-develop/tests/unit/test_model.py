@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 
-from support import TOOLS_ROOT
+from support import DEVELOP_ROOT, TOOLS_ROOT
 
 sys.path.insert(0, str(TOOLS_ROOT))
 
@@ -17,6 +17,15 @@ from aiwf_core.model import (  # noqa: E402
 
 
 class WorkflowModelTests(unittest.TestCase):
+    def test_design_guide_requires_mermaid_for_diagrams(self) -> None:
+        guide = (DEVELOP_ROOT / "wf/references/stages/design.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("流程图、类图、关系图", guide)
+        self.assertIn("以 `mermaid` 标记的 Markdown 围栏代码块", guide)
+        self.assertIn("不要求为简单内容机械补图", guide)
+
     def test_command_surface_matches_approved_plan(self) -> None:
         self.assertEqual(
             [spec.name for spec in COMMAND_SPECS],
