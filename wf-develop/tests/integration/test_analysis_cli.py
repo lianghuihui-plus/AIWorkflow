@@ -53,7 +53,7 @@ class AnalysisCommandLineTests(unittest.TestCase):
             (workspace / work["result_output"]).write_text(
                 json.dumps(
                     {
-                        "schema_version": 8,
+                        "schema_version": 9,
                         "stage": "analysis",
                         "target_platform": "web",
                         "requirements": [
@@ -126,15 +126,20 @@ class AnalysisCommandLineTests(unittest.TestCase):
             self.assertEqual(work["target_platform"], "web")
             self.assertEqual(work["facts"], {})
             self.assertNotIn("decisions", work)
-            self.assertEqual(work["stage_guide"], "references/stages/analysis.md")
-            self.assertEqual(work["stage_guide_base"], "wf_skill")
+            self.assertEqual(work["stage_guide"]["id"], "analysis")
+            self.assertEqual(
+                work["stage_guide"]["source"], "references/stages/analysis.md"
+            )
+            self.assertIn("完整阅读 PRD", work["stage_guide"]["instructions"])
+            self.assertEqual(len(work["stage_guide"]["sha256"]), 64)
+            self.assertIn("# Project Memory", work["memory_context"]["content"])
             self.assertIn("prd/requirements.md", work["inputs"])
             self.assertIn(".aiwf/project.json", work["inputs"])
             self.assertNotIn(".aiwf/requirements.json", work["inputs"])
             self.assertIn("repository_context", work)
             self.assertIn("重点识别离线编辑约束", work["goal"])
             self.assertEqual(work["feedback"], "重点识别离线编辑约束")
-            guide = SOURCE_ROOT / "wf" / work["stage_guide"]
+            guide = SOURCE_ROOT / "wf" / work["stage_guide"]["source"]
             self.assertTrue(guide.is_file())
             result_seed = json.loads(
                 (workspace / work["result_output"]).read_text(encoding="utf-8")
@@ -155,7 +160,7 @@ class AnalysisCommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             result = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "stage": "analysis",
                 "target_platform": "web",
                 "requirements": [

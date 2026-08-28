@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 STAGES = (
     "analysis",
     "design",

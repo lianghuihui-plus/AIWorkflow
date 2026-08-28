@@ -46,7 +46,7 @@ def advance_single_task_to_implementation(workspace: Path) -> None:
         design,
         markdown="# Design\n\nPersist drafts in the editor repository.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "design",
             "requirements": ["REQ-001"],
             "design_mode": "anchored",
@@ -88,7 +88,7 @@ def advance_single_task_to_implementation(workspace: Path) -> None:
         specification,
         markdown="# T-001 Specification\n\nPersist and restore draft content.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "specification",
             "task_id": "T-001",
             "memory_delta": [],
@@ -134,7 +134,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
             self.assertEqual(repository_context["type"], "git")
             self.assertEqual(repository_context["head"], baseline)
             self.assertIn("?? existing.txt", repository_context["status_lines"])
-            self.assertTrue((SOURCE_ROOT / "wf" / str(implementation["stage_guide"])).is_file())
+            self.assertIn("按照当前任务规格", implementation["stage_guide"]["instructions"])
             self.assertNotIn(".aiwf/tasks.json", implementation["inputs"])
 
             (repository / "src/app.txt").write_text("draft persistence implemented\n", encoding="utf-8")
@@ -143,7 +143,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                 implementation,
                 markdown="# Implementation\n\nAdded draft persistence.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "implementation",
                     "task_id": "T-001",
                     "changed_files": ["src/app.txt"],
@@ -195,7 +195,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
             self.assertEqual(testing["depends_on"], ["T-001-implementation@1"])
             self.assertIn(" M src/app.txt", testing["repository_context"]["status_lines"])
             self.assertIn("?? existing.txt", testing["repository_context"]["status_lines"])
-            self.assertTrue((SOURCE_ROOT / "wf" / str(testing["stage_guide"])).is_file())
+            self.assertIn("真实生产代码", testing["stage_guide"]["instructions"])
 
             (repository / "tests").mkdir()
             (repository / "tests/test_drafts.txt").write_text("draft test\n", encoding="utf-8")
@@ -204,7 +204,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                 testing,
                 markdown="# Tests\n\nDraft persistence behavior passed.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "testing",
                     "task_id": "T-001",
                     "test_files": ["tests/test_drafts.txt"],
@@ -251,7 +251,7 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
                 implementation,
                 markdown="# Implementation\n\nChanged the application.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "implementation",
                     "task_id": "T-001",
                     "changed_files": [],
@@ -279,6 +279,50 @@ class ImplementationTestingCommandLineTests(unittest.TestCase):
             error = json.loads(rejected.stderr)["error"]
             self.assertEqual(error["code"], "repository_change_mismatch")
             self.assertEqual(error["details"]["unreported"], ["src/app.txt"])
+
+    def test_implementation_rejects_clear_test_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository, _ = initialize_git_repository(root)
+            workspace = initialize_workspace(root, repository=repository)
+            advance_single_task_to_implementation(workspace)
+            implementation = run_success(["prepare", "--workspace", str(workspace)])
+            (repository / "tests").mkdir()
+            (repository / "tests/test_drafts.txt").write_text("premature test\n", encoding="utf-8")
+            write_outputs(
+                workspace,
+                implementation,
+                markdown="# Implementation\n\nIncorrectly changed a test file.\n",
+                result={
+                    "schema_version": 9,
+                    "stage": "implementation",
+                    "task_id": "T-001",
+                    "changed_files": ["tests/test_drafts.txt"],
+                    "validation_summary": "Not applicable.",
+                    "memory_delta": [],
+                },
+            )
+
+            rejected = subprocess.run(
+                [
+                    "python3",
+                    str(SOURCE_ROOT / "wf/tools/aiwf.py"),
+                    "submit",
+                    "--workspace",
+                    str(workspace),
+                    "--work-id",
+                    str(implementation["work_id"]),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(rejected.returncode, 4)
+            self.assertEqual(
+                json.loads(rejected.stderr)["error"]["code"],
+                "repository_stage_scope_violation",
+            )
 
 
 if __name__ == "__main__":

@@ -8,12 +8,14 @@ from support import DEVELOP_ROOT, TOOLS_ROOT
 sys.path.insert(0, str(TOOLS_ROOT))
 
 from aiwf_core.model import (  # noqa: E402
+    AIWorkflowError,
     COMMAND_SPECS,
     MODES,
     SCHEMA_VERSION,
     STAGES,
     TASK_STATUSES,
 )
+from aiwf_core.stage_guides import load_stage_guide  # noqa: E402
 
 
 class WorkflowModelTests(unittest.TestCase):
@@ -47,7 +49,7 @@ class WorkflowModelTests(unittest.TestCase):
         )
 
     def test_stage_and_mode_vocabulary_is_stable(self) -> None:
-        self.assertEqual(SCHEMA_VERSION, 8)
+        self.assertEqual(SCHEMA_VERSION, 9)
         self.assertNotIn("deferred", TASK_STATUSES)
         self.assertEqual(
             STAGES,
@@ -61,6 +63,12 @@ class WorkflowModelTests(unittest.TestCase):
             ),
         )
         self.assertEqual(MODES, ("ready", "working", "review", "blocked", "decision"))
+
+    def test_stage_guide_cannot_be_swapped_across_stages(self) -> None:
+        with self.assertRaises(AIWorkflowError) as raised:
+            load_stage_guide("references/stages/design.md", stage="analysis")
+
+        self.assertEqual(raised.exception.code, "stage_guide_mismatch")
 
 
 if __name__ == "__main__":

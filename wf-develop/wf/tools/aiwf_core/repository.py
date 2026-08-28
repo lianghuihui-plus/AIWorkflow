@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -9,6 +10,75 @@ from pathlib import Path
 from typing import Any
 
 from .model import AIWorkflowError
+
+
+def start_repository_session(raw: str | Mapping[str, Any]) -> dict[str, Any]:
+    context = (
+        copy.deepcopy(dict(raw))
+        if isinstance(raw, Mapping)
+        else inspect_repository(raw)
+    )
+    context["carried_changes"] = []
+    context["pause_checkpoint"] = None
+    return context
+
+
+def checkpoint_repository_session(session: Mapping[str, Any]) -> dict[str, Any]:
+    current = inspect_repository(str(session["root"]))
+    comparison = compare_repository_context(dict(session), current)
+    carried = set(session.get("carried_changes", []))
+    if comparison["changed_files"] is not None:
+        carried.update(comparison["changed_files"])
+    updated = copy.deepcopy(dict(session))
+    updated["carried_changes"] = sorted(carried)
+    updated["pause_checkpoint"] = current
+    return updated
+
+
+def resume_repository_session(session: Mapping[str, Any]) -> dict[str, Any]:
+    checkpoint = session.get("pause_checkpoint")
+    if not isinstance(checkpoint, dict):
+        raise AIWorkflowError(
+            code="repository_pause_checkpoint_missing",
+            message="Blocked work does not have a repository pause checkpoint.",
+            exit_code=7,
+        )
+    current = inspect_repository(str(session["root"]))
+    try:
+        paused_changes = compare_repository_context(checkpoint, current)["changed_files"]
+    except AIWorkflowError as error:
+        raise AIWorkflowError(
+            code="repository_pause_conflict",
+            message="Repository identity or Git HEAD changed while work awaited a decision.",
+            exit_code=7,
+            details={"cause": error.code, **error.details},
+        ) from error
+    carried = set(session.get("carried_changes", []))
+    overlap = sorted(carried & set(paused_changes or []))
+    if overlap:
+        raise AIWorkflowError(
+            code="repository_pause_conflict",
+            message="Files already owned by the active work changed while it awaited a decision.",
+            exit_code=7,
+            details={"paths": overlap},
+        )
+    resumed = copy.deepcopy(current)
+    resumed["carried_changes"] = sorted(carried)
+    resumed["pause_checkpoint"] = None
+    return resumed
+
+
+def compare_repository_session(
+    session: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    comparison = compare_repository_context(dict(session), dict(current))
+    changed = comparison["changed_files"]
+    if changed is not None:
+        comparison["changed_files"] = sorted(
+            set(changed) | set(session.get("carried_changes", []))
+        )
+    return comparison
 
 
 def inspect_repository(raw_path: str) -> dict[str, Any]:

@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 
-def render_memory(memory: dict[str, Any], decisions: dict[str, Any]) -> str:
+def render_memory(
+    memory: dict[str, Any],
+    decisions: dict[str, Any],
+    *,
+    sources: Collection[str] | None = None,
+    artifact_ids: Collection[str] = (),
+) -> str:
+    allowed_sources = set(sources) if sources is not None else None
+    allowed_artifact_ids = set(artifact_ids)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in memory["items"]:
-        if item["status"] == "active":
+        source_artifact = item["source"].rsplit("@", 1)[0]
+        relevant = (
+            allowed_sources is None
+            or item["source"] in allowed_sources
+            or source_artifact in allowed_artifact_ids
+        )
+        if item["status"] == "active" and relevant:
             grouped.setdefault(item["type"], []).append(item)
 
     lines = ["# Project Memory", ""]

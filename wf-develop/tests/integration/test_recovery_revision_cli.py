@@ -33,7 +33,7 @@ def submit_analysis_for_review(workspace: Path) -> dict[str, object]:
         work,
         markdown="# Analysis\n\nUsers save drafts.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "analysis",
             "target_platform": "web",
             "requirements": [
@@ -352,7 +352,7 @@ class RecoveryRevisionCommandLineTests(unittest.TestCase):
                 design,
                 markdown="# Design\n\nPersist drafts.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "design",
                     "requirements": ["REQ-001"],
                     "design_mode": "greenfield",
@@ -552,7 +552,7 @@ class RecoveryRevisionCommandLineTests(unittest.TestCase):
                 encoding="utf-8",
             )
             original_result = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "stage": "analysis",
                 "target_platform": "web",
                 "requirements": [

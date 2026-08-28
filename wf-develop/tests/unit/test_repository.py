@@ -7,8 +7,12 @@ from pathlib import Path
 
 from aiwf_core.model import AIWorkflowError
 from aiwf_core.repository import (
+    checkpoint_repository_session,
     compare_repository_context,
+    compare_repository_session,
     inspect_repository,
+    resume_repository_session,
+    start_repository_session,
     validate_repository_evidence,
 )
 
@@ -129,6 +133,35 @@ class RepositoryContextTests(unittest.TestCase):
                 compare_repository_context(before, inspect_repository(str(repository)))
 
             self.assertEqual(raised.exception.code, "repository_baseline_changed")
+
+    def test_resume_absorbs_non_overlapping_external_changes_without_claiming_them(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = initialize_repository(Path(directory))
+            session = start_repository_session(str(repository))
+            (repository / "app.txt").write_text("agent change\n", encoding="utf-8")
+            paused = checkpoint_repository_session(session)
+            (repository / "external.txt").write_text("external change\n", encoding="utf-8")
+
+            resumed = resume_repository_session(paused)
+            (repository / "final.txt").write_text("agent final\n", encoding="utf-8")
+            comparison = compare_repository_session(
+                resumed, inspect_repository(str(repository))
+            )
+
+            self.assertEqual(comparison["changed_files"], ["app.txt", "final.txt"])
+
+    def test_resume_rejects_external_changes_to_an_owned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = initialize_repository(Path(directory))
+            session = start_repository_session(str(repository))
+            (repository / "app.txt").write_text("agent change\n", encoding="utf-8")
+            paused = checkpoint_repository_session(session)
+            (repository / "app.txt").write_text("overlapping external change\n", encoding="utf-8")
+
+            with self.assertRaises(AIWorkflowError) as raised:
+                resume_repository_session(paused)
+
+            self.assertEqual(raised.exception.code, "repository_pause_conflict")
 
 
 if __name__ == "__main__":

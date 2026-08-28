@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -27,9 +28,9 @@ def build_work(
     inputs: list[str],
     depends_on: list[str],
     sources: list[str],
-    stage_guide: str,
+    stage_guide: dict[str, Any],
     constraints: list[str],
-    global_memory_sha256: str,
+    memory_content: str,
     target_platform: str,
     facts: dict[str, Any] | None = None,
     repository_context: dict[str, Any] | None = None,
@@ -53,14 +54,15 @@ def build_work(
         "inputs": inputs,
         "depends_on": depends_on,
         "sources": sources,
-        "global_memory": ".aiwf/memory.md",
-        "global_memory_sha256": global_memory_sha256,
+        "memory_context": {
+            "sha256": hashlib.sha256(memory_content.encode("utf-8")).hexdigest(),
+            "content": memory_content,
+        },
         "draft_output": f".aiwf/work/{work_id}/artifact.md",
         "result_output": f".aiwf/work/{work_id}/result.json",
         "result_schema": result_schema(stage, active_item),
         "result_seed": result_seed(stage, active_item),
-        "stage_guide": stage_guide,
-        "stage_guide_base": "wf_skill",
+        "stage_guide": dict(stage_guide),
         "constraints": constraints,
         "facts": dict(facts or {}),
         "predecessor": predecessor,
@@ -94,20 +96,37 @@ def validate_work(value: Any) -> dict[str, Any]:
     require_string_list(work.get("depends_on"), document, "depends_on")
     require_string_list(work.get("sources"), document, "sources")
     for field_name in (
-        "global_memory",
-        "global_memory_sha256",
         "draft_output",
         "result_output",
-        "stage_guide",
         "created_at",
     ):
-        require_string(work.get(field_name), document, field_name, empty=field_name == "stage_guide")
-    if not re.fullmatch(r"[0-9a-f]{64}", work["global_memory_sha256"]):
-        fail_schema(document, "global_memory_sha256 must be a SHA-256 digest")
+        require_string(work.get(field_name), document, field_name)
+    memory_context = require_mapping(work.get("memory_context"), document)
+    memory_content = require_string(
+        memory_context.get("content"), document, "memory_context.content", empty=True
+    )
+    memory_sha256 = require_string(
+        memory_context.get("sha256"), document, "memory_context.sha256"
+    )
+    if hashlib.sha256(memory_content.encode("utf-8")).hexdigest() != memory_sha256:
+        fail_schema(document, "memory_context sha256 does not match its content")
     require_mapping(work.get("result_schema"), document)
     require_mapping(work.get("result_seed"), document)
-    if work.get("stage_guide_base") != "wf_skill":
-        fail_schema(document, "stage_guide_base must be wf_skill")
+    stage_guide = require_mapping(work.get("stage_guide"), document)
+    if set(stage_guide) != {"id", "version", "source", "sha256", "instructions"}:
+        fail_schema(document, "stage_guide has unsupported fields")
+    guide_id = require_string(stage_guide.get("id"), document, "stage_guide.id")
+    if guide_id != work["stage"]:
+        fail_schema(document, "stage_guide.id must match work stage")
+    if type(stage_guide.get("version")) is not int or stage_guide["version"] < 1:
+        fail_schema(document, "stage_guide.version must be a positive integer")
+    require_string(stage_guide.get("source"), document, "stage_guide.source")
+    guide_content = require_string(
+        stage_guide.get("instructions"), document, "stage_guide.instructions"
+    )
+    guide_sha256 = require_string(stage_guide.get("sha256"), document, "stage_guide.sha256")
+    if hashlib.sha256(guide_content.encode("utf-8")).hexdigest() != guide_sha256:
+        fail_schema(document, "stage_guide sha256 does not match its instructions")
     require_string_list(work.get("constraints"), document, "constraints")
     require_mapping(work.get("facts"), document)
     if "repository_context" in work:
@@ -156,6 +175,12 @@ def validate_work(value: Any) -> dict[str, Any]:
                 not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
             ):
                 fail_schema(document, "repository fingerprint sha256 must be a digest or null")
+        require_string_list(
+            repository.get("carried_changes"), document, "repository_context.carried_changes"
+        )
+        pause_checkpoint = repository.get("pause_checkpoint")
+        if pause_checkpoint is not None and not isinstance(pause_checkpoint, dict):
+            fail_schema(document, "repository_context.pause_checkpoint must be an object or null")
     require_optional_string(work.get("predecessor"), document, "predecessor")
     require_optional_string(work.get("feedback"), document, "feedback")
     return work
@@ -166,7 +191,8 @@ def copy_successor_work(
     *,
     work_id: str,
     feedback: str | None = None,
-    global_memory_sha256: str | None = None,
+    memory_content: str | None = None,
+    repository_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return build_work(
         work_id=work_id,
@@ -176,15 +202,19 @@ def copy_successor_work(
         inputs=list(previous["inputs"]),
         depends_on=list(previous["depends_on"]),
         sources=list(previous["sources"]),
-        stage_guide=previous["stage_guide"],
+        stage_guide=dict(previous["stage_guide"]),
         constraints=list(previous["constraints"]),
-        global_memory_sha256=(
-            global_memory_sha256 or previous["global_memory_sha256"]
+        memory_content=(
+            memory_content
+            if memory_content is not None
+            else previous["memory_context"]["content"]
         ),
         target_platform=previous["target_platform"],
         facts=dict(previous["facts"]),
         repository_context=(
-            dict(previous["repository_context"])
+            repository_context
+            if repository_context is not None
+            else dict(previous["repository_context"])
             if "repository_context" in previous
             else None
         ),

@@ -51,12 +51,12 @@ python3 <aiwf.py> resolve-drift --workspace <workspace> --artifact-id <id> --rev
 python3 <aiwf.py> prepare --workspace <workspace> [--task-id <T-id>] [--instruction <current-user-instruction>]
 ```
 
-读取返回任务包中的 `global_memory`、`inputs`、`facts`、`stage_guide` 和必要 `sources`。`target_platform` 始终给出目标平台，`facts` 始终存在，`facts.requirements` 在后续阶段表示当前有效需求投影；不要为了正常工作读取整个 `requirements.json`、`decisions.json`、`history` 或 `events`。`stage_guide_base=wf_skill` 表示指南路径相对于当前 `wf` Skill 目录。工具已经在 `result_output` 写入 `result_seed` 作为待填写起点；完成后的内容必须符合 `result_schema`，不阅读内核代码推断格式。遵循任务包目标与边界，自主分析需求；只写 `draft_output` 和 `result_output`，不要直接修改正式产物或其他 `.aiwf` 数据。
+开始语义工作前，完整阅读并遵循任务包中的 `stage_guide.instructions`，再读取 `memory_context.content`、`inputs`、`facts` 和必要 `sources`。任务包已经内嵌当前阶段指南和本任务相关记忆，不要另行读取其他阶段指南或整个 `requirements.json`、`decisions.json`、`memory.md`、`history`、`events`。`target_platform` 始终给出目标平台，`facts` 始终存在，`facts.requirements` 在后续阶段表示当前有效需求投影。工具已经在 `result_output` 写入 `result_seed` 作为待填写起点；完成后的内容必须符合 `result_schema`，不阅读内核代码推断格式。遵循任务包目标与边界，自主分析需求；只写 `draft_output` 和 `result_output`，不要直接修改正式产物或其他 `.aiwf` 数据。
 任务阶段默认由引擎选择下一个可处理任务；只有用户明确指定任务时才传 `--task-id`。
 
 判断信息时区分来源：目标行为按“最新用户确认 > PRD > Agent 推断”，代码现状按“仓库证据 > PRD 或口述”，平台能力按“官方文档或实际验证 > 推断”。需求未规定的局部实现细节由 Agent 自主决定；长期保留时写为 `engineering_default`，同时给出理由和验证点，不伪装成已确认业务事实。
 
-最新用户反馈或当前产物明确替代 `global_memory` 中的旧决策时，在结果的 `superseded_decisions` 登记对应 `D-id`；只有产物审核通过后旧决策才会退出当前记忆。不要为了缩短上下文而失效仍然有效的决定。
+最新用户反馈或当前产物明确替代 `memory_context.content` 中的旧决策时，在结果的 `superseded_decisions` 登记对应 `D-id`；只有产物审核通过后旧决策才会退出当前记忆。不要为了缩短上下文而失效仍然有效的决定。
 
 `memory_delta` 只记录确实需要跨阶段复用的信息：`repository_fact` 必须带文件与符号证据，`architecture_decision` 必须带理由，`engineering_default` 必须带理由和验证点，`validation_item` 必须说明验证方式。短期思考过程和产物正文摘要不要写入长期记忆。
 

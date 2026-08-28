@@ -20,7 +20,7 @@
     },
     {
       "id": "technical_design",
-      "visible_inputs": ["accepted_requirements", "approved_analysis", "repository_snapshot", "global_memory"],
+      "visible_inputs": ["accepted_requirements", "approved_analysis", "repository_snapshot", "memory_context"],
       "criteria": ["architecture_quality", "code_evidence_accuracy", "repository_scope_fidelity", "decision_rationale", "validation_design"]
     },
     {

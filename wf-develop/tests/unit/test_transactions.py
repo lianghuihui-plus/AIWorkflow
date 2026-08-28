@@ -32,7 +32,7 @@ class TransactionTests(unittest.TestCase):
             original_requirements = store.read_json("requirements.json")
             changed_state = {**original_state, "updated_at": now_iso()}
             changed_requirements = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "items": [
                     {
                         "id": "REQ-001",
@@ -72,7 +72,7 @@ class TransactionTests(unittest.TestCase):
             store = engine.store
             changed_state = {**store.read_json("state.json"), "updated_at": now_iso()}
             changed_requirements = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "items": [
                     {
                         "id": "REQ-001",

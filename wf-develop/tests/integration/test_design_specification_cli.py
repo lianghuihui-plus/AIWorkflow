@@ -50,7 +50,7 @@ def approve_analysis(workspace: Path) -> None:
         work,
         markdown="# Analysis\n\nUsers save drafts and resume editing.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "analysis",
             "target_platform": "web",
             "requirements": [
@@ -90,7 +90,7 @@ def approve_design(
         work,
         markdown="# Technical Design\n\nUse the repository draft module.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "design",
             "requirements": requirements,
             "design_mode": "anchored" if code_evidence else "greenfield",
@@ -124,7 +124,7 @@ def approve_task_plan(workspace: Path, tasks: list[dict[str, object]]) -> None:
         work,
         markdown="# Task Plan\n\nExecutable production-code tasks.\n",
         result={
-            "schema_version": 8,
+            "schema_version": 9,
             "stage": "specification",
             "tasks": tasks,
             "memory_delta": [],
@@ -185,7 +185,7 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
             source.write_text("class DraftStore", encoding="utf-8")
             work = run_success(["prepare", "--workspace", str(workspace)])
             result = {
-                "schema_version": 8,
+                "schema_version": 9,
                 "stage": "design",
                 "requirements": ["REQ-001"],
                 "design_mode": "anchored",
@@ -301,7 +301,7 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
                 analysis,
                 markdown="# Analysis\n\nSave and resume drafts.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "analysis",
                     "target_platform": "web",
                     "requirements": [
@@ -369,7 +369,7 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
                 design,
                 markdown="# Design\n\nDraftStore owns persistence; DraftEditor restores state.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "design",
                     "requirements": ["REQ-001"],
                     "design_mode": "greenfield",
@@ -399,13 +399,13 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
             self.assertEqual(task_plan["artifact"]["id"], "task-plan")
             self.assertEqual(task_plan["facts"]["work_kind"], "task_planning")
             self.assertEqual(task_plan["depends_on"], ["design@1"])
-            self.assertTrue((SOURCE_ROOT / "wf" / str(task_plan["stage_guide"])).is_file())
+            self.assertIn("任务规划", task_plan["stage_guide"]["instructions"])
             write_outputs(
                 workspace,
                 task_plan,
                 markdown="# Task Plan\n\nPersist first, then expose resume behavior.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "specification",
                     "tasks": [
                         {
@@ -456,7 +456,7 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
                     specification,
                     markdown=f"# {task_id} Specification\n\nProduction-code implementation guidance.\n",
                     result={
-                        "schema_version": 8,
+                        "schema_version": 9,
                         "stage": "specification",
                         "task_id": task_id,
                         "memory_delta": [],
@@ -488,7 +488,7 @@ class DesignSpecificationCommandLineTests(unittest.TestCase):
                 first_implementation,
                 markdown="# T-001 Implementation\n\nPersisted drafts.\n",
                 result={
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "stage": "implementation",
                     "task_id": "T-001",
                     "changed_files": [],

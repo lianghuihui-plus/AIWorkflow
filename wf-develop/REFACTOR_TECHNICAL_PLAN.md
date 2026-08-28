@@ -143,10 +143,14 @@ wf-develop/
 │           ├── workflow.py
 │           ├── context.py
 │           ├── stage_context.py
+│           ├── stage_guides.py
 │           ├── artifacts.py
 │           ├── decisions.py
+│           ├── decision_flow.py
 │           ├── sources.py
 │           ├── repository.py
+│           ├── file_roles.py
+│           ├── operation_policy.py
 │           ├── review.py
 │           ├── health.py
 │           ├── dashboard.py
@@ -162,9 +166,10 @@ wf-develop/
 ```
 
 `wf` 是共享内核的所有者。`wf-init` 和 `wf-status` 是薄入口，并把调用委托给同一套内核，不再复制校验器。
-`workflow.py` 负责编排用例，`stage_context.py` 负责五阶段任务上下文，事实校验按
-artifact、decision、source、repository 和 health 分模块；`dashboard.py` 与 `memory_view.py`
-分别生成看板和当前记忆投影。
+`workflow.py` 负责编排用例，`decision_flow.py` 负责问题规范化、决定完整性和上游路由策略，`stage_context.py` 负责五阶段任务上下文，`stage_guides.py`
+装载当前阶段的确定性指导，`operation_policy.py` 统一操作门禁，`repository.py` 与
+`file_roles.py` 负责仓库会话和高置信文件职责。事实校验按 artifact、decision、source、
+repository 和 health 分模块；`dashboard.py` 与 `memory_view.py` 分别生成看板和记忆投影。
 
 当前实现直接维护上述 develop 正式路径。重构过程中的临时实现目录已经删除，不属于现行架构、
 验证边界或发布流程。
@@ -213,7 +218,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "project_id": "demo-project",
   "name": "Demo Project",
   "platform": "HarmonyOS",
@@ -229,7 +234,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "current_stage": "analysis",
   "mode": "ready",
   "active_item": null,
@@ -267,7 +272,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "items": [
     {
       "id": "REQ-001",
@@ -307,7 +312,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "items": [
     {
       "id": "T-001",
@@ -342,7 +347,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "items": [
     {
       "id": "T-001-spec",
@@ -388,7 +393,7 @@ workspace/
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "items": [
     {
       "id": "D-001",
@@ -627,8 +632,8 @@ flowchart LR
 ### 7.1 三层记忆
 
 1. 对话记忆：当前会话中可利用，但不作为事实源。
-2. 项目长期记忆：`memory.json` 与当前有效决策生成的可读投影 `memory.md`；完整 `decisions.json` 只用于状态、看板和审计。
-3. 当前任务上下文：引擎按阶段和任务动态生成。
+2. 项目长期记忆：`memory.json` 与当前有效决策生成的完整可读投影 `memory.md`；完整 `decisions.json` 只用于状态、看板和审计。
+3. 当前任务上下文：引擎按当前 work 的传递上游、当前产物历史来源和全部有效用户决定生成相关记忆投影，并直接内嵌到任务包。
 
 ### 7.2 任务包结构
 
@@ -642,8 +647,7 @@ flowchart LR
   "active_item": "T-001",
   "target_platform": "HarmonyOS",
   "facts": {"requirements": [], "work_kind": "task_specification"},
-  "global_memory": ".aiwf/memory.md",
-  "global_memory_sha256": "...",
+  "memory_context": {"sha256": "...", "content": "# Project Memory\n..."},
   "inputs": [
     "artifacts/analysis.md",
     "artifacts/design.md",
@@ -653,9 +657,14 @@ flowchart LR
   "draft_output": ".aiwf/work/W-000001/artifact.md",
   "result_output": ".aiwf/work/W-000001/result.json",
   "result_schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "...": "完整字段契约"},
-  "result_seed": {"schema_version": 8, "stage": "specification", "task_id": "T-001", "memory_delta": [], "superseded_decisions": []},
-  "stage_guide": "references/stages/specification.md",
-  "stage_guide_base": "wf_skill",
+  "result_seed": {"schema_version": 9, "stage": "specification", "task_id": "T-001", "memory_delta": [], "superseded_decisions": []},
+  "stage_guide": {
+    "id": "specification",
+    "version": 1,
+    "source": "references/stages/specification.md",
+    "sha256": "...",
+    "instructions": "# 任务规格\n..."
+  },
   "constraints": [
     "不得替用户决定未确认业务选择",
     "不得修改任务范围外代码"
@@ -663,7 +672,7 @@ flowchart LR
 }
 ```
 
-任务包只提供路径、目标、完整结果 JSON Schema、可填写 seed 和边界。`prepare` 将
+任务包只提供当前阶段指导、相关记忆、路径、目标、完整结果 JSON Schema、可填写 seed 和边界。`prepare` 将
 `result_seed` 写入 `result_output`；seed 只是待填写起点，可以尚未满足最终 Schema，
 `submit` 时必须符合 `result_schema`。Agent 不读取内核代码推断机器格式，并根据任务包读取内容，不把整个框架说明加载进上下文。
 Agent 只写 `draft_output` 和 `result_output`，不直接覆盖正式产物或引擎数据。修订任务的草稿
@@ -738,6 +747,9 @@ revision work。引擎不从用户自然语言猜测路由。
 before image 回滚，尚未 `prepared` 的事务直接清理。由此保证命令失败或进程中断后可以恢复到
 完整的提交前或提交后状态，而不是依赖多次文件替换天然原子。
 
+普通写命令只自动恢复事务，不静默重建发生漂移的生成视图。`recover` 与显式 `render` 才会按
+结构化事实源重建 `memory.md` 和看板，使直接 Engine 调用与 CLI 具有同一恢复语义。
+
 `status` 只获取共享读锁且绝不执行恢复或渲染；发现未完成事务时返回 `needs_recovery`，由
 下一次 `wf` 写操作执行恢复。网页渲染失败不回滚已经完成的数据事务，但必须返回清晰错误。
 
@@ -768,7 +780,7 @@ stateDiagram-v2
 ### 8.4 健康门禁
 
 `status` 为每个 issue 返回 `blocking` 与 `recovery_action`，并给出顶层 `can_advance`。
-存在阻塞错误时 `next_action=resolve_health_issues`，CLI 拒绝正常 `prepare`、`submit` 以及
+存在阻塞错误时 `next_action=resolve_health_issues`，Engine 在独占锁内拒绝正常 `prepare`、`submit` 以及
 decision resume，但继续允许 `status`、`recover`、`resolve-drift`、记录用户决定和创建上游
 revision。批准审核在内核独占事务中校验当前结构健康和批准后的语义投影，不能被该审批将要
 消除的合法过渡态反向阻塞。生成视图漂移走确定性恢复，产物漂移走显式采纳或放弃，索引覆盖
@@ -779,6 +791,10 @@ revision。批准审核在内核独占事务中校验当前结构健康和批准
 单项审核通过后，如果仍有可执行项则保持当前阶段并回到 `ready`，只有本阶段所有非 withdrawn
 任务的对应产物都 `approved` 才推进。默认一次只允许一个 active item，避免并发 Agent 修改同一
 工作空间；未来若需要并行处理，必须单独设计租约和合并协议。
+
+work 进入阻塞态时记录仓库 pause checkpoint 和此前已归属变化；恢复时仅把不重叠的等待期变化
+吸收到新 baseline，已归属文件被外部修改或 Git HEAD 改变时返回冲突。实现和测试提交还会按
+仓库现有路径惯例执行高置信文件角色检查；不明确的配置、资源和非标准路径保留给 Agent 判断。
 
 ## 9. 三个 Skill 的职责
 
@@ -1262,182 +1278,8 @@ revision。批准审核在内核独占事务中校验当前结构健康和批准
 - develop 正式目录中不再保留被替代的旧运行时结构。
 - `wf-release` 从重构开始到完成始终没有被修改。
 
-## 21. 审查收口修复
+## 21. 当前实现状态
 
-完整实现审查确认正常五阶段主干已经成立，但恢复、已批准产物修订、机器结果契约、未决需求门禁、任务撤回依赖和生成记忆投影仍存在入口或状态缺口。收口修复采用以下决定：
+当前候选实现采用 Schema 9，不兼容或迁移任何旧 Schema。当前阶段指南与相关记忆直接内嵌到 work 包；所有推进门禁在 WorkflowEngine 独占锁内执行；实现和测试通过高置信文件角色阻止明确越界；仓库会话在阻塞前记录已归属变化，并在恢复时吸收不重叠的外部变化。完整项目记忆和看板仍是可重建投影，正常 Agent 上下文只接收当前 work 的相关记忆。
 
-- 增加内部 `recover`、`revise` 命令，不增加第四个 Skill。
-- `revise` 默认拒绝覆盖活动 work，只有用户明确确认后才归档并替换。
-- `prepare` 返回完整 JSON Schema 并创建结果 seed，阶段指南只保留语义指导。
-- 技术设计只能引用 `accepted` 需求，活动任务不能依赖已撤回任务。
-- `memory.json` 保持事实源；`status` 只读报告投影漂移，`recover` 显式重建 `memory.md` 后才允许继续推进。
-- `wf` 和 `wf-status` 不兼容旧工作空间，遇到未初始化目录时停止并引导用户重新初始化。
-- 根 README 切换到新架构，删除旧 Markdown 校验器及同步脚本。
-
-## 22. 二次审查修复
-
-`2026-08-26` 的完整审查发现修订结果与 Agent Schema 混用、已批准记忆增量被重放、需求到
-任务覆盖未形成门禁，以及任务 `deferred` 为不可达状态。修复采用以下决定：
-
-- 当时工作空间 Schema 提升到 `2`；该版本随后已被第 23 节的 Schema 3 取代。
-- `result_template` 更名为 `result_seed`；历史结果按 `result_schema` 递归投影为 Agent 可编辑字段。
-- 未批准返工保留候选记忆增量，已批准 revision 清空历史增量并提供 `affected_memory`。
-- 空 revision 被拒绝；正文、Agent 结果、记忆或精确依赖发生变化时才失效下游。
-- 分析结果至少包含一个当前范围需求；每个活动任务必须关联需求，全部 `accepted` 需求必须被覆盖。
-- 删除任务 `deferred`；延期交付通过需求 `deferred` 表达，暂时停工不改变任务状态。
-- `status` 在设计产物存在后检查需求覆盖漂移，所有规则由内核执行，不增加阶段指南负担。
-
-## 23. 三次审查修复
-
-`2026-08-26` 的闭环审查发现正式 Markdown 漂移只能检测不能恢复、依赖任务实现报告未进入
-任务包、健康检查遗漏循环依赖，以及运行时 integer 校验接受 JSON boolean。修复采用以下决定：
-
-- 工作空间 Schema 提升到 `3`，不兼容或迁移 Schema 1、2。
-- 每次提交保存不可变 Markdown revision 快照，注册表通过 `snapshot_path` 指向当前快照。
-- 增加内部 `resolve-drift` 命令；用户可采纳孤立的正式 Markdown 修改，或反复恢复批准快照，包括恢复缺失的正式正文。
-- 结构化结果、work 或快照漂移保持硬错误，不从 Markdown 反推机器状态。
-- 实现任务包加入前置任务的已批准实现报告，不加载无关任务产物。
-- 任务图、artifact 关联、问题影响阶段和事件最低结构由内核统一校验。
-- 修复 JSON boolean 被当作 integer 接受的问题，不引入第三方或自制通用 Schema 引擎。
-- 删除重写期不可达文案、未使用符号和 `wf-init` 的平台预设，不修改五份阶段指南。
-
-## 24. 五阶段职责重新对齐
-
-`2026-08-26` 根据业务目标重新审查五阶段后，确认旧实现把任务拆分过早放入技术设计，且需求
-分析缺少目标端过滤的结构化证据，容易让流程框架完整但 Agent 的实际语义工作偏弱。本次采用
-以下架构调整，当时工作空间 Schema 提升到 `4`；该版本随后被第 25 节的 Schema 5 和第 26 节的 Schema 6 取代，仍不兼容或迁移任何旧 Schema。
-
-### 24.1 阶段所有权
-
-| 阶段 | 负责 | 明确不负责 |
-|---|---|---|
-| 需求分析 | 从混合平台 PRD 提取目标端实施点，区分新增、修改、复用、延期和排除 | 技术架构、任务拆分、测试设计 |
-| 技术设计 | 基于真实仓库设计模块、文件、类、职责、接口、状态和数据交互 | 创建执行任务、逐行正式代码、单元测试设计 |
-| 任务规格 | 先形成 `task-plan`，再为每个任务说明做什么、怎么做和完成目标 | 正式代码、测试文件、用例、Mock 和断言设计 |
-| 代码实现 | 按规格修改生产代码，并自主处理不改变上游目标的局部冲突 | 新增或修改单元测试代码 |
-| 单元测试 | 基于真实实现编写并执行单元测试，记录结果与覆盖缺口 | 为通过测试擅自改变生产行为 |
-
-### 24.2 规格阶段内部状态
-
-不新增第六个公开阶段。`specification` 通过 `active_item` 区分两个工作种类：
-
-1. `active_item=null` 时为 `task_planning`，产物是 `artifacts/task-plan.md`，结果清单包含任务及硬依赖。
-2. `task-plan` 提交后任务状态为 `proposed`，审核通过后转为 `planned`。
-3. `active_item=T-XXX` 时为 `task_specification`，产物是 `artifacts/specs/T-XXX.md`。
-4. 所有活动任务规格审核通过后，公开阶段才推进到 `implementation`。
-
-依赖链固定为 `analysis -> design -> task-plan -> T-XXX-spec -> T-XXX-implementation -> T-XXX-test`。
-上游 revision 的语义变化沿该链递归标记下游产物和相关任务为 `stale`。
-
-### 24.3 结构化契约与仓库门禁
-
-- 分析结果增加 `target_platform`，每个功能点增加 `platform_scope`、`change_type`、
-  `scope_reason` 和 `disposition`；纯其他端内容不能作为 `proposed` 实施项。若分析审核后没有
-  `accepted` 需求，流程直接进入 `completed`，不创建虚假的设计或编码任务。
-- 设计结果只登记完整的 `accepted` 需求 ID 集合；提交和 `status` 都检查精确覆盖。
-- 任务索引只由 `task-plan` 提交生成；`status` 独立检查活动任务对全部 `accepted` 需求的覆盖。
-- 技术设计、任务规划、逐任务规格、实现和单元测试都要求配置可访问的代码仓库，并在任务包中
-  提供 `repository_context`；语义指南要求 Agent 继续读取相关真实代码，而不是只依赖仓库摘要。
-- 确定性格式、状态、ID、依赖、覆盖和版本规则留在 Python 内核；五份阶段指南只承载判断目标、
-  交付质量和应当停止的高影响边界，以减少 Agent 的框架负担。
-
-## 25. 初始化、决策路由与健康门禁收口
-
-`2026-08-26` 的完整闭环审查发现：初始化允许省略代码仓库但后续阶段强制要求仓库；问题全部
-回答后自动恢复原 work，无法表达中途需求变化；`status` 报告的结构错误没有统一推进门禁；
-技术方案仍有重写期路径和旧依赖示例。本次采用以下最终架构，工作空间 Schema 提升到 `5`，
-不兼容或迁移任何旧 Schema：
-
-- `wf-init`、CLI、初始化模型和 `project.json` 都强制要求有效代码仓库目录，不增加后补配置命令。
-- 状态增加 `decision` 模式；`decide` 只保存用户原始决定，不再隐式创建 successor work。
-- 增加 `route-decision`：`resume` 复制当前草稿继续，`revise` 原子归档当前 work 并创建受影响的
-  上游 revision work。
-- revision 路由目标必须是当前 work 的传递上游依赖、当前已批准 revision，并位于问题 `impact`
-  声明的阶段中；引擎不解释自然语言决定。
-- `status` 输出 `can_advance`、issue `blocking` 与 `recovery_action`；CLI 对正常推进执行统一错误门禁，
-  同时保留恢复、漂移处理、人工决定记录和上游修订入口。
-- 当时文档示例统一使用 Schema 5 和真实依赖链；该版本随后被第 26、27、28 节取代。
-- 五份阶段指南不增加状态机和格式规则；实际语义质量继续通过真实 PRD 独立评价，而不是增加
-  Skill 框架负担。
-
-## 26. Schema 6 闭环修复
-
-`2026-08-26` 的完整实现审查发现：待审核产物发生正文漂移后，健康检查建议的恢复命令无法
-处理该状态；问题创建时由 Agent 预估的 `impact` 被当作回修授权边界；实现与测试报告中的文件
-清单没有和任务期间的真实仓库变化核对；静态看板没有完整显示决策路由和恢复动作。修复采用
-以下架构，工作空间 Schema 提升到 `6`，仍不兼容或迁移任何旧 Schema：
-
-- `resolve-drift` 根据产物状态执行恢复。`approved` 保持现有 revision 语义；`review` 可以恢复
-  提交快照或把外部正文带入 successor work；`changes_requested` 可以在不破坏当前 work 的前提
-  下恢复正式正文，采纳外部正文仍需用户明确确认覆盖当前 work；`stale` 只允许恢复快照。
-- 健康检查为漂移返回产物状态、可恢复性、允许结果和准确的 `recovery_action`。正文漂移可以由
-  工作流恢复；结构化结果、work 或无法重建的历史数据损坏返回 `manual_repair_required`。
-- 问题 `impact` 保留为提问时的预估影响，不再作为 revision 路由的硬授权。引擎只强制目标是
-  当前 decision work 的传递上游、当前已批准 revision，并在事件中记录预估影响、实际目标及
-  是否发生影响扩展。
-- Git 仓库上下文记录任务开始时的状态与脏文件指纹。实现和测试提交时重新检查仓库，将 Agent
-  声明的文件清单与本 work 新产生的变化核对；非 Git 目录明确标记为有限校验，不伪装成完整
-  差异闭环。引擎不执行编码、不自动重跑测试，也不解释变更语义。
-- 看板消费状态检查已经生成的决策上下文和健康恢复信息，不在渲染器中复制状态机判断。
-- 三个 Skill 入口和五阶段交互保持不变。阶段指南只补充必要的判断边界，不加入仓库算法、状态
-  转换或 Schema 规则。真实 PRD 效果评价继续与工程结构测试分离，由最终统一验收执行。
-
-## 27. Schema 7 语义证据与上游纠正
-
-`2026-08-27` 对新旧版本真实需求运行结果进行根因分析后确认，主要缺口不在五阶段状态机，而在
-语义信息没有区分来源、代码事实缺少可验证证据、后续阶段持续读取历史撤回项，以及下游发现
-上游事实错误时无法闭环。本次保持“确定性 Python 内核 + Agent 自由 Markdown 产物”，不新增
-通用 claims 数据库，工作空间 Schema 提升到 `7`，仍不兼容或迁移任何旧 Schema。
-
-- `requirements.sources` 改为 `{kind, ref}`，明确区分 PRD、用户反馈、用户决策、仓库证据和
-  Agent 推断；`modify/reuse` 必须有可解析为 `<path>#<symbol>` 的仓库来源。
-- 需求分析获得仓库上下文，但只做范围级轻量调查；技术设计结果新增 `code_evidence`，内核对
-  `existing` 路径和符号执行存在性检查，`planned` 只登记计划，不解析 Markdown 或推断业务语义。
-- `memory_delta` 限定为 `repository_fact`、`architecture_decision`、`engineering_default`、
-  `validation_item`；内核分别校验证据、理由和验证点，并在审核通过后保留到结构化 memory。
-- design 和 task-plan 的正常任务包不再把完整 `requirements.json` 作为输入，而由
-  `facts.requirements` 提供当前 `accepted` 投影；withdrawn 仅留在索引、历史和看板审计视图。
-- 新增内部 `route-upstream`。只有当前 work 的仓库证据可以触发已批准传递上游的事实纠正；
-  引擎原子归档当前 work、创建上游 revision 并复用既有下游失效机制。范围变化、目标行为变化和
-  架构取舍仍必须通过 `question -> decide -> route-decision` 获得人工决策。
-- `status` 和 dashboard 分开报告当前需求与历史撤回需求；history/events 保持按需审计，不进入
-  正常 Agent 上下文。
-
-## 28. Schema 8 当前上下文与证据边界
-
-`2026-08-27` 的完整实现审查确认五阶段状态机与产物事务主链路已经成立，但平台过滤证据、人工
-决策生命周期、monorepo 作用域和技术设计现状证据仍混用了不同概念。本次不改变三个 Skill、
-五阶段、审核交互和产物形态，工作空间 Schema 提升到 `8`，仍不兼容或迁移任何旧 Schema：
-
-- 需求分析只对目标端和跨端的 `modify/reuse` 强制目标仓库证据；纯其他端排除项保留 PRD 来源
-  和范围理由，不要求在目标仓库中证明其他平台实现。
-- `decisions.json` 增加 `active/superseded` 生命周期、替代关系和替代来源。`memory.md` 只投影当前
-  有效决定，正常任务包不再重复提供完整决策档案；revision 结果可声明 `superseded_decisions`，
-  但只有人工审核通过后才应用。
-- 仓库上下文同时记录配置 `root` 与 `git_root`。证据和 Agent 调查都限制在配置 root；Git 基线仍
-  覆盖完整 worktree，以便拒绝当前 work 新产生的作用域外变化。
-- 技术设计的 `code_evidence` 只接受真实文件和符号，不再承载 planned 内容。非空仓库必须使用
-  `anchored` 模式；只有配置目录为空时允许 `greenfield`，计划内容继续保留在自由 Markdown 中。
-- PRD、用户决定、用户反馈、仓库证据和 Agent 推断分别采用可校验 ref；Agent 推断的 `self` 在
-  submit 时归一化为当前 artifact revision。
-- 所有任务包固定包含 `target_platform` 和 `facts`，analysis 的 `facts` 为空对象。阶段上下文、
-  决策生命周期和来源协议分别下沉到 `stage_context.py`、`decisions.py` 和 `sources.py`，
-  `workflow.py` 保留状态、事务和路由编排职责。
-- 自动化测试只证明确定性流程与读写闭环；真实 PRD 的 release/develop 盲评仍是 Agent 需求分析
-  与技术设计质量的最终验收，未执行前不得宣称语义能力目标已经完成。
-
-## 29. 当前有效投影与事务内审批门禁
-
-`2026-08-27` 的真实工作空间验证发现，上游 analysis revision 提交后，候选需求会在批准前保持
-`proposed`，同时旧 design、task-plan 和 tasks 已按依赖变为 `stale`。旧健康检查仍把 stale
-下游与当前 accepted 需求比较，并在 CLI 调用审批事务前执行全局门禁，形成审批无法解除的循环。
-
-- 保留“提交候选索引并立即失效下游”的审核模型，不推迟候选数据展示，也不修改 Schema。
-- `health.py` 只负责纯结构化语义规则。`approved/review` 产物参与当前语义投影；`stale` 和
-  `changes_requested` 只保留结构完整性与历史审计，不参与当前需求覆盖和任务引用门禁。
-- task-plan 只有在 `approved/review` 时才激活任务引用与覆盖校验；其中 `withdrawn` 任务退出计划，
-  `stale` 任务仍属于已批准计划，只表示后续规格或实现需要重做。
-- `review_artifact` 在同一个独占锁中校验当前结构健康，构造批准后的 requirements、tasks、
-  artifacts 和 state 投影，再校验目标语义关系，全部通过后才原子提交。
-- CLI 不再在审批事务外重复全局门禁，避免内核直接调用与 CLI 行为分叉及检查提交竞态。
-- stale 产物仍执行正文、结果、work 和快照哈希检查；修复不会掩盖历史文件损坏。
+确定性流程、事务、恢复、版本、依赖、漂移和阶段边界由自动化测试验证。真实 PRD 的 release/develop 盲评仍是语义能力的最终验收；验收通过前保持候选发布状态。

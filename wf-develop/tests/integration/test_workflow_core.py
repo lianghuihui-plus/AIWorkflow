@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from support import bootstrap_engine, write_work_outputs
 
+from aiwf_core.decision_flow import validate_decision_revision_target
 from aiwf_core.model import AIWorkflowError, SCHEMA_VERSION
 from aiwf_core.workflow import WorkflowEngine
 
@@ -162,7 +163,11 @@ class WorkflowCoreTests(unittest.TestCase):
             with self.assertRaises(AIWorkflowError) as raised:
                 engine.prepare_work(goal="Resume")
 
-            self.assertEqual(raised.exception.code, "work_drift")
+            self.assertEqual(raised.exception.code, "workspace_health_blocked")
+            self.assertIn(
+                "work_drift",
+                {issue["type"] for issue in raised.exception.details["issues"]},
+            )
 
     def test_analysis_submit_and_review_are_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -223,6 +228,28 @@ class WorkflowCoreTests(unittest.TestCase):
             self.assertEqual(inspection["status"], "issues_found")
             self.assertIn("artifact_drift", {issue["type"] for issue in inspection["issues"]})
             self.assertEqual(engine.store.read_json("state.json")["mode"], "review")
+
+    def test_direct_engine_prepare_uses_the_same_health_gate_as_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            engine = bootstrap_engine(workspace)
+            work = engine.prepare_work(goal="Analyze requirements")
+            write_work_outputs(
+                engine,
+                work,
+                markdown="# Analysis\n",
+                result=analysis_result(),
+            )
+            engine.submit_work(work["work_id"])
+            engine.review_artifact("analysis", 1, outcome="approved")
+            (workspace / "artifacts/analysis.md").write_text(
+                "# External drift\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(AIWorkflowError) as raised:
+                engine.prepare_work(goal="Design")
+
+            self.assertEqual(raised.exception.code, "workspace_health_blocked")
 
     def test_change_request_creates_a_seeded_successor_revision(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -449,7 +476,7 @@ class WorkflowCoreTests(unittest.TestCase):
             ]
 
             with self.assertRaises(AIWorkflowError) as raised:
-                engine._validate_decision_revision_target(
+                validate_decision_revision_target(
                     work,
                     unrelated,
                     resolved,

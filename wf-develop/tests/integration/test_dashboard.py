@@ -80,7 +80,7 @@ class DashboardTests(unittest.TestCase):
             (workspace / work["result_output"]).write_text(
                 json.dumps(
                     {
-                        "schema_version": 8,
+                        "schema_version": 9,
                         "stage": "analysis",
                         "target_platform": "web",
                         "requirements": [
@@ -130,7 +130,7 @@ class DashboardTests(unittest.TestCase):
             (workspace / work["result_output"]).write_text(
                 json.dumps(
                     {
-                        "schema_version": 8,
+                        "schema_version": 9,
                         "stage": "analysis",
                         "target_platform": "web",
                         "requirements": [
@@ -255,7 +255,7 @@ class DashboardTests(unittest.TestCase):
             (workspace / work["result_output"]).write_text(
                 json.dumps(
                     {
-                        "schema_version": 8,
+                        "schema_version": 9,
                         "stage": "analysis",
                         "target_platform": "web",
                         "requirements": [
